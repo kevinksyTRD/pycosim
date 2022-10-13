@@ -1,0 +1,12 @@
+pyyaml
+pytest
+pandas
+numpy
+xmlschema
+pyOSPParser
+jupyter
+scipy
+matplotlib
+pylint
+plotly
+nbdev
