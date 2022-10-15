@@ -10,3 +10,6 @@ matplotlib
 pylint
 plotly
 nbdev
+lxml
+lark
+attrs
