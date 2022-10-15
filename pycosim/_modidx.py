@@ -213,5 +213,6 @@ d = { 'settings': { 'branch': 'main',
                                     'pycosim.simulation.SimulationConfigurationError': ( 'simulation.html#simulationconfigurationerror',
                                                                                          'pycosim/simulation.py'),
                                     'pycosim.simulation.SimulationOutput': ('simulation.html#simulationoutput', 'pycosim/simulation.py'),
+                                    'pycosim.simulation.clean_header': ('simulation.html#clean_header', 'pycosim/simulation.py'),
                                     'pycosim.simulation.convert_value_to_osp_type': ( 'simulation.html#convert_value_to_osp_type',
                                                                                       'pycosim/simulation.py')}}}
