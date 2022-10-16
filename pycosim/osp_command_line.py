@@ -307,6 +307,7 @@ def run_cosimulation(
         for _ in range(3):
             simulator_name = simulator_name[:simulator_name.rfind('_')]
         result[simulator_name] = pandas.read_csv(os.path.join(output_file_path, file), index_col="Time")
+        result[simulator_name].drop(["StepCount"], axis=1, inplace=True)
         new_column_name = list(map(clean_header, result[simulator_name].columns))
         result[simulator_name].columns = new_column_name
     if delete_output:

@@ -4,17 +4,16 @@
 __all__ = ['convert_value_to_osp_type', 'clean_header', 'SimulationConfigurationError', 'FMU', 'Component', 'Causality',
            'InitialValues', 'SimulationOutput', 'Function', 'SimulationConfiguration']
 
-# %% ../nbs/02_Simulation.ipynb 4
-from dataclasses import dataclass
 import os
 import shutil
 import uuid
+# %% ../nbs/02_Simulation.ipynb 4
+from dataclasses import dataclass
 from enum import Enum
 from sys import platform
-from typing import NamedTuple, Union, List, Dict, Tuple, Type
+from typing import Union, List, Dict, Type
 
 import attr
-import pandas
 from pyOSPParser.logging_configuration import (
     OspLoggingConfiguration, OspSimulatorForLogging
 )
@@ -71,8 +70,8 @@ from pyOSPParser.system_configuration import (
 from pycosim.osp_command_line import (
     run_cosimulation, LoggingLevel, run_single_fmu, SimulationResult
 )
-
 from .model_description import read_model_description, ModelDescription
+
 
 # %% ../nbs/02_Simulation.ipynb 6
 def convert_value_to_osp_type(
@@ -335,6 +334,7 @@ class SimulationOutput(SimulationResult):
     output_file_path: str = None
 
 
+@dataclass
 class Function:
     """Function used in SimulationConfiguration"""
     type: FunctionType
@@ -359,7 +359,7 @@ class SimulationConfiguration:
     def __init__(
             self,
             system_structure: Union[str, OspSystemStructure] = None,
-            path_to_fmu: str = None,
+            path_to_fmu: str = "",
             components: List[Component] = None,
             initial_values: List[InitialValues] = None,
             scenario: OSPScenario = None,
@@ -375,6 +375,8 @@ class SimulationConfiguration:
                 an instance of OspSystemStructure.
                 Must be given together with the path_to_fmu argument..
             path_to_fmu(optional): A path to the FMUs for the given system structure.
+                Only relevant when system_structure is given.
+                If not given, the FMU path is taken from the system structure.
             components(optional): Components for the system given as a list of Component instance
             initial_values(optional): Initial values for the simulation given as a
                 list of InitialValues instance
@@ -383,8 +385,6 @@ class SimulationConfiguration:
                 given as a OSPScenario instance
         """
         if system_structure:
-            assert path_to_fmu is not None, \
-                "The path to fmu should be given together with the system structure"
             self.system_structure = OspSystemStructure(xml_source=system_structure)
             self.components = []
             self.initial_values = []
