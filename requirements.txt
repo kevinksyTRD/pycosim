@@ -13,3 +13,4 @@ nbdev
 lxml
 lark
 attrs
+kaleido
