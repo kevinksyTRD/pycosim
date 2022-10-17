@@ -8,7 +8,7 @@ import json
 import logging
 from dataclasses import dataclass
 from subprocess import Popen
-from typing import Dict, Union
+from typing import Dict, Union, Optional
 
 
 # %% ../nbs/03_fmu_proxy_interface.ipynb 4
@@ -16,7 +16,7 @@ from typing import Dict, Union
 class NetworkEndpoint:
     """Namedtuple class for a network endpoint"""
     address: str
-    port: int
+    port: int = None
 
     def to_dict(self) -> Dict[str, Union[str, int]]:
         """Return dictionary form of the data"""
@@ -29,7 +29,14 @@ class NetworkEndpoint:
     @property
     def network_string(self) -> str:
         """Returns a network string"""
+        if self.port is None:
+            return self.address
         return f"{self.address}:{self.port}"
+
+    @property
+    def is_local_host(self) -> bool:
+        """Returns True if the address is localhost"""
+        return self.address in ["localhost", "127.0.0.1"]
 
 
 class DistributedSimulationProxyServer:
@@ -37,43 +44,30 @@ class DistributedSimulationProxyServer:
 
     def __init__(
             self,
-            file_path_fmu: str,
-            guid: str = None,
+            file_path_fmu: Optional[str] = None,
             endpoint: NetworkEndpoint = NetworkEndpoint(address="localhost", port=9090),
+            source_text: Optional[str] = None,
     ):
         """Constructor for the class"""
+        if source_text is not None:
+            # source_text should be in the following form: "address:port?file=path/to/fmu"
+            # if address is localhost, port may be missing
+            address_port, query = source_text.split("?")
+            address, port = address_port.split(":") if ":" in address_port else (address_port, None)
+            port = int(port) if port is not None else None
+            file_path_fmu = query.split("=")[1]
+            endpoint = NetworkEndpoint(address=address, port=port)
         self.endpoint = endpoint
-        self.guid = guid
         self.file_path_fmu = file_path_fmu
 
     @property
     def _query_string(self):
         """Returns the query string for the endpoint"""
-        return f"file={self.file_path_fmu}" if self.guid is None else f"guid={self.guid}"
+        return f"file={self.file_path_fmu}"
 
     @property
     def endpoint_str(self):
         """Returns the end point for a system structure file"""
-        return f"fmu-proxy://{self.endpoint.network_string}?{self._query_string}"
+        return f"proxyfmu://{self.endpoint.network_string}?{self._query_string}"
 
-    def run_local_proxy_server_async(
-            self,
-            path_to_server_executable,
-            logger: logging.Logger = None,
-    ) -> Union[Popen, bool]:
-        """Run a local proxy server if it is set to be local. Only applicable for java based proxy server"""
-        if self.endpoint.address != "localhost":
-            if logger is not None:
-                logger.error("This instance is for remote proxy server. Skip the command")
-            return False
-
-        args = [
-            'java', '-jar',
-            path_to_server_executable, '-thrift/tcp', str(self.endpoint.port),
-            self.file_path_fmu
-        ]
-        if logger is not None:
-            logger.info(f"Starting a proxy-server at port {self.endpoint.port}.")
-            logger.info(" ".join(args))
-        return Popen(args=args)
 

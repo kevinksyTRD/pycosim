@@ -4,14 +4,14 @@
 __all__ = ['convert_value_to_osp_type', 'clean_header', 'SimulationConfigurationError', 'FMU', 'Component', 'Causality',
            'InitialValues', 'SimulationOutput', 'Function', 'SimulationConfiguration']
 
-import os
-import shutil
-import uuid
 # %% ../nbs/02_Simulation.ipynb 4
+import os
+import uuid
+import shutil
 from dataclasses import dataclass
 from enum import Enum
 from sys import platform
-from typing import Union, List, Dict, Type
+from typing import Union, List, Dict, Type, Optional
 
 import attr
 from pyOSPParser.logging_configuration import (
@@ -70,6 +70,7 @@ from pyOSPParser.system_configuration import (
 from pycosim.osp_command_line import (
     run_cosimulation, LoggingLevel, run_single_fmu, SimulationResult
 )
+from .fmu_proxy import DistributedSimulationProxyServer, NetworkEndpoint
 from .model_description import read_model_description, ModelDescription
 
 
@@ -111,27 +112,61 @@ class FMU:
     """Class for managing FMU"""
     osp_model_description: OspModelDescription = None
     model_description: ModelDescription = None
+    runs_on_proxy_server: bool = False
+    network_endpoint: Optional[NetworkEndpoint] = None
 
-    def __init__(self, fmu_file: str):
+    def __init__(
+            self,
+            fmu_file: str,
+            runs_on_proxy_server: bool = False,
+            network_endpoint: Optional[NetworkEndpoint] = None
+    ):
         """Initialize the FMU
 
         Args:
             fmu_file(str): path to the FMU file
+            runs_on_proxy_server(bool): True if the FMU is a network FMU
+            network_endpoint(NetworkEndpoint): Network endpoint information if the FMU is a network FMU
         """
         assert fmu_file.endswith('.fmu')
+        self.runs_on_proxy_server = runs_on_proxy_server
+        self.network_endpoint = network_endpoint
+        if runs_on_proxy_server:
+            assert network_endpoint is not None, "Network endpoint information is required for network FMU"
         self.fmu_file = fmu_file
-        if os.path.isfile(fmu_file):
-            self.model_description = read_model_description(fmu_file)
-            # Check if there is OSP Model description file in the same directory
-            osp_model_description_file = os.path.join(
-                os.path.dirname(self.fmu_file),
-                '%s_OspModelDescription.xml' % self.name
-            )
-            if os.path.isfile(osp_model_description_file):
-                self.import_osp_model_description(osp_model_description_file)
+        if not self.is_remote_network_fmu:
+            if os.path.isfile(fmu_file):
+                self.model_description = read_model_description(fmu_file)
+                # Check if there is OSP Model description file in the same directory
+                osp_model_description_file = os.path.join(
+                    os.path.dirname(self.fmu_file),
+                    '%s_OspModelDescription.xml' % self.name
+                )
+                if os.path.isfile(osp_model_description_file):
+                    self.import_osp_model_description(osp_model_description_file)
 
-        else:
-            raise TypeError(f'The FMU file cannot be found. {self.fmu_file}')
+            else:
+                raise TypeError(f'The FMU file cannot be found. {self.fmu_file}')
+
+    @property
+    def is_remote_network_fmu(self) -> bool:
+        """Check if the FMU is a remote network FMU"""
+        if self.runs_on_proxy_server and self.network_endpoint is not None:
+            return not self.network_endpoint.is_local_host
+        return False
+
+    @property
+    def source(self) -> str:
+        """Return the source of the FMU"""
+        if self.runs_on_proxy_server:
+            result = f"proxyfmu://{self.network_endpoint.address}"
+            file_path = os.path.basename(self.fmu_file)
+            if self.is_remote_network_fmu:
+                result += f":{self.network_endpoint.port}"
+                file_path = self.fmu_file
+            result += f"?file={file_path}"
+            return result
+        return os.path.basename(self.fmu_file)
 
     @property
     def name(self) -> str:
@@ -141,37 +176,51 @@ class FMU:
     @property
     def model_name(self) -> str:
         """Returns the name of the FMU"""
-        return self.model_description.modelName
+        if not self.is_remote_network_fmu:
+            return self.model_description.modelName
+        raise NotImplementedError('Network FMU does not have model name')
 
     @property
     def guid(self) -> str:
         """Returns the UUID of the FMU"""
-        return self.model_description.guid
+        if not self.is_remote_network_fmu:
+            return self.model_description.guid
+        raise NotImplementedError('Network FMU does not have GUID')
 
     @property
     def description(self) -> str:
         """Returns the description of the FMU"""
-        return self.model_description.description
+        if not self.is_remote_network_fmu:
+            return self.model_description.description
+        raise NotImplementedError('Network FMU does not have description')
 
     @property
     def parameters(self) -> List[Dict]:
         """Returns parameters as a list of dictionaries"""
-        return [attr.asdict(var) for var in self.model_description.parameters]
+        if not self.is_remote_network_fmu:
+            return [attr.asdict(var) for var in self.model_description.parameters]
+        raise NotImplementedError('Network FMU does not have parameters')
 
     @property
     def inputs(self) -> List[Dict]:
         """Returns inputs as a list of dictionaries"""
-        return [attr.asdict(var) for var in self.model_description.input_variables]
+        if not self.is_remote_network_fmu:
+            return [attr.asdict(var) for var in self.model_description.input_variables]
+        raise NotImplementedError('Network FMU does not have inputs')
 
     @property
     def outputs(self) -> List[Dict]:
         """Returns outputs as a list of dictionaries"""
-        return [attr.asdict(var) for var in self.model_description.output_variables]
+        if not self.is_remote_network_fmu:
+            return [attr.asdict(var) for var in self.model_description.output_variables]
+        raise NotImplementedError('Network FMU does not have outputs')
 
     @property
     def other_variables(self) -> List[Dict]:
         """Returns other variables as a list of dictionaries"""
-        return [attr.asdict(var) for var in self.model_description.other_variables]
+        if not self.is_remote_network_fmu:
+            return [attr.asdict(var) for var in self.model_description.other_variables]
+        raise NotImplementedError('Network FMU does not have other variables')
 
     def import_osp_model_description(self, xml_source: str):
         """Import OSP Model Description file or string
@@ -184,14 +233,16 @@ class FMU:
     def get_endpoint_dict(self) -> Dict[str, List[Dict[str, str]]]:
         """Returns endpoint information as a dictionary with keys:
         'input', 'output', 'variable_group'"""
-        return {
-            'input': self.inputs,
-            'output': self.outputs,
-            'parameters': self.parameters,
-            'others': self.other_variables,
-            'variable_group': self.osp_model_description.to_dict().get('VariableGroups', None)
-                              if self.osp_model_description is not None else None
-        }
+        if not self.is_remote_network_fmu:
+            return {
+                'input': self.inputs,
+                'output': self.outputs,
+                'parameters': self.parameters,
+                'others': self.other_variables,
+                'variable_group': self.osp_model_description.to_dict().get('VariableGroups', None)
+                                  if self.osp_model_description is not None else None
+            }
+        raise NotImplementedError('Network FMU does not have endpoint information')
 
     def get_input_names(self) -> List[str]:
         """Returns input names as a list"""
@@ -310,7 +361,12 @@ class FMU:
 class Component:
     """Component used in SimulationConfiguration"""
     name: str
-    fmu: FMU
+    fmu: Optional[FMU] = None
+    distributed_simulation_setting: DistributedSimulationProxyServer = None
+
+    @property
+    def runs_on_network(self) -> bool:
+        return self.distributed_simulation_setting is not None
 
 
 class Causality(Enum):
@@ -389,17 +445,38 @@ class SimulationConfiguration:
             self.components = []
             self.initial_values = []
             self.functions = []
-            for Simulator in self.system_structure.Simulators:
+            for simulator in self.system_structure.Simulators:
+                if simulator.fmu_rel_path == "proxy-fmy://":
+                    raise TypeError(
+                        "OspSystemStructure is outdated for describing the proxy server. "
+                        "Please read the documentation for the new format. "
+                        "(https://open-simulation-platform.github.io/libcosim/distributed) "
+                    )
+                if simulator.fmu_rel_path == "proxyfmu://":
+                    proxy_server = DistributedSimulationProxyServer(
+                        source_text=simulator.source
+                    )
+                    if proxy_server.endpoint.is_local_host:
+                        file_path = os.path.join(path_to_fmu, proxy_server.file_path_fmu)
+                    else:
+                        file_path = proxy_server.file_path_fmu
+                    fmu = FMU(
+                        fmu_file=file_path,
+                        runs_on_proxy_server=True,
+                        network_endpoint=proxy_server.endpoint,
+                    )
+                else:
+                    fmu = FMU(fmu_file=os.path.join(path_to_fmu, simulator.source))
                 self.components.append(Component(
-                    name=Simulator.name,
-                    fmu=FMU(os.path.join(path_to_fmu, Simulator.source))
+                    name=simulator.name,
+                    fmu=fmu
                 ))
-                if Simulator.InitialValues:
+                if simulator.InitialValues:
                     self.initial_values.extend([InitialValues(
-                        component=Simulator.name,
+                        component=simulator.name,
                         variable=initial_value.variable,
                         value=initial_value.value.value
-                    ) for initial_value in Simulator.InitialValues])
+                    ) for initial_value in simulator.InitialValues])
             if len(self.initial_values) == 0:
                 # noinspection PyTypeChecker
                 self.initial_values = None
@@ -532,7 +609,12 @@ class SimulationConfiguration:
         # Create a system structure file
         fmu_rel_path = self.get_fmu_rel_path(path_to_deploy, path_to_sys_struct)
         for component in self.system_structure.Simulators:
-            component.fmu_rel_path = fmu_rel_path
+            if component.fmu_rel_path != "proxyfmu://":
+                component.fmu_rel_path = fmu_rel_path
+            else:
+                if component.source.startswith("localhost") or component.source.startswith("127.0.0.1"):
+                    address_query, file_name = component.source.split("=")
+                    component.source = f"{address_query}={fmu_rel_path}{file_name}"
         with open(os.path.join(path_to_sys_struct, 'OspSystemStructure.xml'), 'wt') as file:
             file.write(self.system_structure.to_xml_str())
 
@@ -572,15 +654,16 @@ class SimulationConfiguration:
     def add_component(
             self,
             name: str,
-            fmu: FMU,
+            fmu: Optional[FMU] = None,
             stepSize: float = None,
-            rel_path_to_fmu: str = ''
+            rel_path_to_fmu: str = '',
     ) -> Component:
         """Add a component to the system structure
 
         Args:
             name: Name of the component
-            fmu: The model for the component given as FMU instance
+            fmu(Optional): The model for the component given as FMU instance.
+                If it is a network fmu from a remote server, no need to be provided
             stepSize(optional): Step size for the simulator in seconds. If not given, its default
             value is used.
             rel_path_to_fmu(optional): Relative path to fmu from a system structure file.
@@ -596,9 +679,21 @@ class SimulationConfiguration:
             # Update the system_structure instance. Create one if it has not been initialized.
             if not self.system_structure:
                 self.system_structure = OspSystemStructure()
+
+            # Get source string depending on if the fmu is a network fmu or not
+            source = fmu.source
+            if fmu.is_remote_network_fmu:
+                source = source.replace(
+                    os.path.basename(fmu.fmu_file),
+                    os.path.join(rel_path_to_fmu, os.path.basename(fmu.fmu_file))
+                )
+            if fmu.runs_on_proxy_server:
+                rel_path_to_fmu = ""
+
+            # Add the component to the system structure
             self.system_structure.add_simulator(OspSimulator(
                 name=name,
-                source=os.path.basename(fmu.fmu_file),
+                source=os.path.basename(fmu.source),
                 stepSize=stepSize,
                 fmu_rel_path=rel_path_to_fmu
             ))
