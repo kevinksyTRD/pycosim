@@ -3,3 +3,6 @@ include LICENSE
 include CONTRIBUTING.md
 include README.md
 recursive-exclude * __pycache__
+recursive-include osp_cosim *
+recursive-include fmi_scheme *
+recursive-include resources *
