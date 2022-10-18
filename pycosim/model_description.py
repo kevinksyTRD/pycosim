@@ -768,9 +768,9 @@ def read_model_description(
             path_schema = PATH_DIR_SCHEMA_FMI3
         else:
             raise Exception("Unsupported FMI version: %s" % fmiVersion)
-        schema = etree.XMLSchema(
-            file=os.path.join(path_schema, f'fmi{fmiVersion[0]}ModelDescription.xsd')
-        )
+        file_path = os.path.join(path_schema, 'fmiModelDescription.xsd') if fmiVersion[0] == '1' \
+            else os.path.join(path_schema, f'fmi{fmiVersion[0]}ModelDescription.xsd')
+        schema = etree.XMLSchema(file=file_path)
 
         if not schema.validate(root):
             problems = ["%s (line %d, column %d): %s" % (e.level_name, e.line, e.column, e.message)
