@@ -163,7 +163,10 @@ def run_single_fmu(
     log, _ = run_cli(args)
 
     # Parse the output
-    result_df = pandas.read_csv(output_file_path, index_col="Time")
+    result_df = pandas.read_csv(output_file_path, index_col=False)
+    result_df.index = result_df['Time'].values
+    result_df.index.name = 'Time'
+    result_df = result_df.drop(columns=['Time'])
     new_column_name = list(map(clean_header, result_df.columns))
     result_df.columns = new_column_name
     result = {fmu_name: result_df}
@@ -306,7 +309,16 @@ def run_cosimulation(
         simulator_name = file
         for _ in range(3):
             simulator_name = simulator_name[:simulator_name.rfind('_')]
-        result[simulator_name] = pandas.read_csv(os.path.join(output_file_path, file), index_col="Time")
+        # Read the csv file for each simulator. The first column is usually the time.
+        # There was a case that it caused a KeyError when passing "Time" as a key to the
+        # index_col argument. Therefore, we set False to the index_col argument and
+        # set the index value as Time after reading the csv file.
+        result[simulator_name] = pandas.read_csv(
+            os.path.join(output_file_path, file), index_col=False
+        )
+        result[simulator_name].index = result[simulator_name]["Time"].values
+        result[simulator_name].index.name = "Time"
+        result[simulator_name].drop(columns=["Time"], inplace=True)
         result[simulator_name].drop(["StepCount"], axis=1, inplace=True)
         new_column_name = list(map(clean_header, result[simulator_name].columns))
         result[simulator_name].columns = new_column_name
