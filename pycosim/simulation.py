@@ -509,10 +509,18 @@ class Component:
     def delete_variable_endpoint(self, variable_name: str) -> VariableEndpoint:
         """Delete variable endpoint"""
         variable_endpoint_to_delete = self.get_variable_endpoint(variable_name)
-        try:
-            self._inputs_used_as_variable_end_points.remove(variable_name)
-        except ValueError:
-            pass
+        if variable_endpoint_to_delete.variable_type == VariableType.VARIABLE_GROUP:
+            osp_var_group = next(filter(
+                lambda var_group: var_group.name == variable_name,
+                self.fmu.get_variable_groups()
+            ))
+            variables_to_delete = get_variables_from_osp_variable_group(osp_var_group)
+            for variable in variables_to_delete:
+                if variable in self._inputs_used_as_variable_end_points:
+                    self._inputs_used_as_variable_end_points.remove(variable)
+        else:
+            if variable_name in self._inputs_used_as_variable_end_points:
+                self._inputs_used_as_variable_end_points.remove(variable_name)
         self.variable_end_points.remove(variable_endpoint_to_delete)
         return variable_endpoint_to_delete
 
@@ -601,8 +609,11 @@ class Function:
             if signal_name in self._inputs_used_as_signal_endpoints:
                 raise ValueError(f'Signal {signal_name} is already used as an input.')
             self._inputs_used_as_signal_endpoints.append(signal_name)
-        if signal_type == SignalType.SIGNAL_GROUP and self.inputCount < 2:
-            raise ValueError(f'Function {self.name} should have inputCount > 2 to add signal group.')
+        if signal_type == SignalType.SIGNAL_GROUP:
+            if self.inputCount < 2:
+                raise ValueError(
+                    f'Function {self.name} should have inputCount > 2 to add signal group.'
+                )
         signal_endpoint = SignalEndpoint(
             signal_name=signal_name,
             signal_type=signal_type,
@@ -1062,72 +1073,71 @@ class SimulationConfiguration:
         """Delete a variable endpoint from the system structure and all connections"""
         # find the component
         component = self.get_component_by_name(component_name)
-        var_endpoint_deleted = component.delete_variable_endpoint(variable_name)
-        osp_var_endpoint_deleted = var_endpoint_deleted.get_osp_variable_endpoint(component_name)
-        connected_endpoint_is_signal = False
-        if var_endpoint_deleted.connected:
+        var_endpoint_to_delete = component.get_variable_endpoint(variable_name)
+        osp_var_endpoint_to_delete = var_endpoint_to_delete.get_osp_variable_endpoint(
+            component_name
+        )
+        # Check if the variable endpoint is connected to another variable endpoint. If so, delete
+        # the connection and disconnect the other endpoint.
+        if var_endpoint_to_delete.connected:
             connection = self.get_connection_for_variable_endpoint(
                 component_name=component_name,
-                variable_endpoint=var_endpoint_deleted
+                variable_endpoint=var_endpoint_to_delete
             )
-            if var_endpoint_deleted.variable_type == VariableType.VARIABLE:
+            if var_endpoint_to_delete.variable_type == VariableType.VARIABLE:
                 if isinstance(connection, OspVariableConnection):
                     osp_endpoint_connected = next(filter(
-                        lambda var_endpoint: var_endpoint.to_dict_xml() != osp_var_endpoint_deleted.to_dict_xml(),
+                        lambda var_endpoint: var_endpoint.to_dict_xml()
+                        != osp_var_endpoint_to_delete.to_dict_xml(),
                         connection.Variable
                     ))
                 elif isinstance(connection, OspSignalConnection):
                     osp_endpoint_connected = connection.Signal
-                    connected_endpoint_is_signal = True
                 else:
                     raise TypeError(f'Unknown connection type: {type(connection)}')
-            elif var_endpoint_deleted.variable_type == VariableType.VARIABLE_GROUP:
+            elif var_endpoint_to_delete.variable_type == VariableType.VARIABLE_GROUP:
                 if isinstance(connection, OspVariableGroupConnection):
                     osp_endpoint_connected = next(filter(
-                        lambda var_endpoint: var_endpoint.to_dict_xml() != osp_var_endpoint_deleted.to_dict_xml(),
+                        lambda var_endpoint: var_endpoint.to_dict_xml()
+                        != osp_var_endpoint_to_delete.to_dict_xml(),
                         connection.VariableGroup
                     ))
                 elif isinstance(connection, OspSignalGroupConnection):
                     osp_endpoint_connected = connection.SignalGroup
-                    connected_endpoint_is_signal = True
                 else:
                     raise TypeError(f'Unknown connection type: {type(connection)}')
             else:
-                raise TypeError(f'Unknown variable type: {var_endpoint_deleted.variable_type}')
-            if connected_endpoint_is_signal:
-                function = self.get_function_by_name(osp_endpoint_connected.function)
-                function.get_signal_endpoint(osp_endpoint_connected.name).connected = False
-            else:
-                component = self.get_component_by_name(osp_endpoint_connected.simulator)
-                component.get_variable_endpoint(osp_endpoint_connected.name).connected = False
+                raise TypeError(f'Unknown variable type: {var_endpoint_to_delete.variable_type}')
             self.delete_connection(
-                endpoint1=osp_var_endpoint_deleted, endpoint2=osp_endpoint_connected
+                endpoint1=osp_var_endpoint_to_delete, endpoint2=osp_endpoint_connected
             )
-        return var_endpoint_deleted
+        return component.delete_variable_endpoint(variable_name)
 
     def delete_signal_endpoint(self, function_name: str, signal_name: str) -> SignalEndpoint:
         """Delete a function endpoint from the system structure and all connections"""
         # find the component
         function = self.get_function_by_name(function_name)
-        sig_endpoint_deleted = function.delete_signal_endpoint(signal_name)
-        osp_var_endpoint_deleted = sig_endpoint_deleted.get_osp_signal_endpoint(function_name)
-        if sig_endpoint_deleted.connected:
+        sig_endpoint_to_delete = function.get_signal_endpoint(signal_name)
+        osp_var_endpoint_to_delete = sig_endpoint_to_delete.get_osp_signal_endpoint(function_name)
+        # check if the signal is connected. If yes, delete the connection and disconnect the other
+        # endpoint
+        if sig_endpoint_to_delete.connected:
             connection = self.get_connection_for_signal_endpoint(
                 function_name=function_name,
-                signal_endpoint=sig_endpoint_deleted
+                signal_endpoint=sig_endpoint_to_delete
             )
-            if sig_endpoint_deleted.signal_type == SignalType.SIGNAL:
+            if sig_endpoint_to_delete.signal_type == SignalType.SIGNAL:
                 osp_endpoint_connected = connection.Variable
-            elif sig_endpoint_deleted.signal_type == SignalType.SIGNAL_GROUP:
+            elif sig_endpoint_to_delete.signal_type == SignalType.SIGNAL_GROUP:
                 osp_endpoint_connected = connection.VariableGroup
             else:
-                raise TypeError(f'Unknown signal type: {sig_endpoint_deleted.signal_type}')
+                raise TypeError(f'Unknown signal type: {sig_endpoint_to_delete.signal_type}')
             component = self.get_component_by_name(osp_endpoint_connected.simulator)
             component.get_variable_endpoint(osp_endpoint_connected.name).connected = False
             self.delete_connection(
-                endpoint1=osp_var_endpoint_deleted, endpoint2=osp_endpoint_connected
+                endpoint1=osp_var_endpoint_to_delete, endpoint2=osp_endpoint_connected
             )
-        return sig_endpoint_deleted
+        return function.delete_signal_endpoint(signal_name)
 
     def add_signal_endpoint(
         self,
@@ -1145,17 +1155,6 @@ class SimulationConfiguration:
             signal_type=signal_type,
             causality=causality
         )
-
-    def delete_signal_endpoint(
-        self,
-        function_name: str,
-        signal_name: str,
-    ) -> SignalEndpoint:
-        """Delete a signal endpoint from the function"""
-        # find the function
-        function = self.get_function_by_name(function_name)
-        # Delete the signal endpoint in the function
-        return function.delete_signal_endpoint(signal_name)
 
     def add_connection(
             self,
@@ -1376,7 +1375,7 @@ class SimulationConfiguration:
             raise TypeError(f'No initial value is found with the given variable: {variable}')
 
     def add_function(self, function_name: str, function_type: FunctionType, **kwargs) \
-            -> Union[OspLinearTransformationFunction, OspSumFunction, OspVectorSumFunction]:
+            -> Function:
         """Add a function
 
         'factor', 'offset' arguments are required for FunctionType.LinearTransformation
@@ -1407,43 +1406,46 @@ class SimulationConfiguration:
             if offset is None:
                 raise TypeError('"offset" argument should be provided for a linear '
                                 'transformation function')
-            self.functions.append(Function(
+            function = Function(
                 name=function_name, type=function_type, factor=factor, offset=offset
-            ))
-            return self.system_structure.add_function(
+            )
+            self.system_structure.add_function(
                 function_name=function_name,
                 function_type=function_type,
                 factor=factor,
                 offset=offset
             )
-
-        if function_type == FunctionType.Sum:
+        elif function_type == FunctionType.Sum:
             inputCount = kwargs.get('inputCount', None)
             if inputCount is None:
                 raise TypeError('"inputCount" argument should be provided for a sum function')
-            self.functions.append(Function(
+            function = Function(
                 name=function_name, type=function_type, inputCount=inputCount
-            ))
-            return self.system_structure.add_function(
+            )
+            self.system_structure.add_function(
                 function_name=function_name, function_type=function_type, inputCount=inputCount
             )
-
-        if function_type == FunctionType.VectorSum:
+        elif function_type == FunctionType.VectorSum:
             inputCount = kwargs.get('inputCount', None)
             if inputCount is None:
                 raise TypeError('"inputCount" argument should be provided for a sum function')
             dimension = kwargs.get('dimension', None)
             if dimension is None:
                 raise TypeError('"dimension" argument should be provided for a sum function')
-            self.functions.append(Function(
+            function = Function(
                 name=function_name, type=function_type, inputCount=inputCount, dimension=dimension
-            ))
-            return self.system_structure.add_function(
+            )
+            self.system_structure.add_function(
                 function_name=function_name,
                 function_type=function_type,
                 inputCount=inputCount,
                 dimension=dimension
             )
+        else:
+            raise TypeError(f'Function type ({function_type}) is not supported')
+
+        self.functions.append(function)
+        return function
 
     def get_function_by_name(self, function_name: str) -> Function:
         """Returns a Function instance from its attributes"""
