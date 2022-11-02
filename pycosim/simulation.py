@@ -384,6 +384,7 @@ class VariableEndpoint:
     name: str
     variable_type: VariableType
     causality: Causality
+    connected: bool = False
     def get_osp_variable_endpoint(self, component_name: str):
         return OspVariableEndpoint(
             simulator=component_name,
@@ -449,9 +450,10 @@ class Component:
         """Returns True if the component runs on a network"""
         return self.distributed_simulation_setting is not None
 
-    def _get_unconnected_variable_endpoint_with_variable(
+    def get_unconnected_variable_endpoint_with_variable(
         self, variable_name: str
     ) -> VariableEndpoint:
+        """Returns a variable endpoint with the given variable name that is not connected"""
         try:
             variable_endpoint = self.get_variable_endpoint(variable_name)
         except ValueError:
@@ -523,6 +525,18 @@ class Component:
             ))
         except StopIteration as exc:
             raise ValueError(f'Variable {variable_name} is not defined in the component.') from exc
+
+    def get_variable_endpoint_not_connected(self, variable_name: str) -> VariableEndpoint:
+        """Get variable endpoint not connected"""
+        try:
+            return next(filter(
+                lambda var_endpoint: var_endpoint.name == variable_name and not var_endpoint.connected,
+                self.variable_end_points
+            ))
+        except StopIteration as exc:
+            raise ValueError(f'There is no unconnected variable endpoint with '
+                             f'the name ({variable_name})in the component.') from exc
+
     def _get_variable_endpoint_from_variable_group(self, variable_name: str) -> VariableEndpoint:
         """Get variable endpoint from variable group"""
         variable_endpoints_as_variable_group = list(filter(
@@ -560,6 +574,13 @@ class SignalEndpoint:
     signal_type: SignalType
     causality: Causality
     connected: bool = False
+
+    def get_osp_signal_endpoint(self, function_name: str) -> OspSignalEndpoint:
+        """Get OSP SignalEndpoint"""
+        return OspSignalEndpoint(
+            function=function_name,
+            name=self.signal_name,
+        )
 
 
 @dataclass
@@ -604,11 +625,23 @@ class Function:
         """Get variable endpoint"""
         try:
             return next(filter(
-                lambda sig_endpoint: sig_endpoint.signal_na == signal_name,
+                lambda sig_endpoint: sig_endpoint.signal_name == signal_name,
                 self.signal_endpoints
             ))
         except StopIteration as exc:
             raise ValueError(f'Variable {signal_name} is not defined in the component.') from exc
+
+    def get_signal_endpoint_not_connected(self, signal_name: str) -> SignalEndpoint:
+        """Get variable endpoint not connected"""
+        try:
+            return next(filter(
+                lambda sig_endpoint: sig_endpoint.signal_name == signal_name
+                and not sig_endpoint.connected,
+                self.signal_endpoints
+            ))
+        except StopIteration as exc:
+            raise ValueError(f'There is no unconnected signal endpoint with '
+                             f'the name ({signal_name})in the component.') from exc
 
 
 class SimulationConfiguration:
@@ -950,11 +983,151 @@ class SimulationConfiguration:
             return source_endpoint
         return endpoints
 
+    def get_connection_for_variable_endpoint(
+            self,
+            component_name: str,
+            variable_endpoint: VariableEndpoint
+    ) -> Union[
+        OspVariableConnection,
+        OspVariableGroupConnection,
+        OspSignalConnection,
+        OspSignalGroupConnection
+    ]:
+        """Returns a connection for a variable endpoint"""
+        osp_variable_endpoint = variable_endpoint.get_osp_variable_endpoint(component_name)
+        osp_variable_endpoint_dict_xml = osp_variable_endpoint.to_dict_xml()
+        try:
+            if variable_endpoint.variable_type == VariableType.VARIABLE:
+                return next(filter(
+                    lambda connection: osp_variable_endpoint_dict_xml
+                    in [osp_var.to_dict_xml() for osp_var in connection.Variable],
+                    self.system_structure.Connections.VariableConnection
+                ))
+            if variable_endpoint.variable_type == VariableType.VARIABLE_GROUP:
+                return next(filter(
+                    lambda connection: osp_variable_endpoint_dict_xml
+                    in [osp_var.to_dict_xml() for osp_var in connection.VariableGroup],
+                    self.system_structure.Connections.VariableGroupConnection
+                ))
+        except StopIteration:
+            try:
+                if variable_endpoint.variable_type == VariableType.VARIABLE:
+                    return next(filter(
+                        lambda connection: osp_variable_endpoint_dict_xml ==
+                        connection.Variable.to_dict_xml(),
+                        self.system_structure.Connections.SignalConnection
+                    ))
+                if variable_endpoint.variable_type == VariableType.VARIABLE_GROUP:
+                    return next(filter(
+                        lambda connection: osp_variable_endpoint_dict_xml ==
+                        connection.VariableGroup.to_dict_xml(),
+                        self.system_structure.Connections.SignalGroupConnection
+                    ))
+            except StopIteration as exc:
+                raise TypeError(f'No connection is found for the variable endpoint '
+                                f'({osp_variable_endpoint_dict_xml})') from exc
+
+    def get_connection_for_signal_endpoint(
+            self,
+            function_name: str,
+            signal_endpoint: SignalEndpoint
+    ) -> Union[OspSignalConnection, OspSignalGroupConnection]:
+        """Returns a connection for a variable endpoint"""
+        osp_signal_endpoint = signal_endpoint.get_osp_signal_endpoint(function_name)
+        osp_signal_endpoint_dict_xml = osp_signal_endpoint.to_dict_xml()
+        try:
+            if signal_endpoint.signal_type == SignalType.SIGNAL:
+                return next(filter(
+                    lambda connection: osp_signal_endpoint_dict_xml
+                    == connection.Signal.to_dict_xml(),
+                    self.system_structure.Connections.SignalConnection
+                ))
+            if signal_endpoint.signal_type == SignalType.SIGNAL_GROUP:
+                return next(filter(
+                    lambda connection: osp_signal_endpoint_dict_xml
+                    == connection.SignalGroup.to_dict_xml(),
+                    self.system_structure.Connections.SignalGroupConnection
+                ))
+        except StopIteration as exc:
+            raise TypeError(f'No connection is found for the signal endpoint '
+                            f'({osp_signal_endpoint_dict_xml})') from exc
+
     def add_variable_endpoint(self, component_name: str, variable_name: str) -> VariableEndpoint:
         """Add a variable endpoint to the system structure"""
         # find the component
         component = self.get_component_by_name(component_name)
         return component.add_variable_endpoint(variable_name)
+
+    def delete_variable_endpoint(self, component_name: str, variable_name: str) -> VariableEndpoint:
+        """Delete a variable endpoint from the system structure and all connections"""
+        # find the component
+        component = self.get_component_by_name(component_name)
+        var_endpoint_deleted = component.delete_variable_endpoint(variable_name)
+        osp_var_endpoint_deleted = var_endpoint_deleted.get_osp_variable_endpoint(component_name)
+        connected_endpoint_is_signal = False
+        if var_endpoint_deleted.connected:
+            connection = self.get_connection_for_variable_endpoint(
+                component_name=component_name,
+                variable_endpoint=var_endpoint_deleted
+            )
+            if var_endpoint_deleted.variable_type == VariableType.VARIABLE:
+                if isinstance(connection, OspVariableConnection):
+                    osp_endpoint_connected = next(filter(
+                        lambda var_endpoint: var_endpoint.to_dict_xml() != osp_var_endpoint_deleted.to_dict_xml(),
+                        connection.Variable
+                    ))
+                elif isinstance(connection, OspSignalConnection):
+                    osp_endpoint_connected = connection.Signal
+                    connected_endpoint_is_signal = True
+                else:
+                    raise TypeError(f'Unknown connection type: {type(connection)}')
+            elif var_endpoint_deleted.variable_type == VariableType.VARIABLE_GROUP:
+                if isinstance(connection, OspVariableGroupConnection):
+                    osp_endpoint_connected = next(filter(
+                        lambda var_endpoint: var_endpoint.to_dict_xml() != osp_var_endpoint_deleted.to_dict_xml(),
+                        connection.VariableGroup
+                    ))
+                elif isinstance(connection, OspSignalGroupConnection):
+                    osp_endpoint_connected = connection.SignalGroup
+                    connected_endpoint_is_signal = True
+                else:
+                    raise TypeError(f'Unknown connection type: {type(connection)}')
+            else:
+                raise TypeError(f'Unknown variable type: {var_endpoint_deleted.variable_type}')
+            if connected_endpoint_is_signal:
+                function = self.get_function_by_name(osp_endpoint_connected.function)
+                function.get_signal_endpoint(osp_endpoint_connected.name).connected = False
+            else:
+                component = self.get_component_by_name(osp_endpoint_connected.simulator)
+                component.get_variable_endpoint(osp_endpoint_connected.name).connected = False
+            self.delete_connection(
+                endpoint1=osp_var_endpoint_deleted, endpoint2=osp_endpoint_connected
+            )
+        return var_endpoint_deleted
+
+    def delete_signal_endpoint(self, function_name: str, signal_name: str) -> SignalEndpoint:
+        """Delete a function endpoint from the system structure and all connections"""
+        # find the component
+        function = self.get_function_by_name(function_name)
+        sig_endpoint_deleted = function.delete_signal_endpoint(signal_name)
+        osp_var_endpoint_deleted = sig_endpoint_deleted.get_osp_signal_endpoint(function_name)
+        if sig_endpoint_deleted.connected:
+            connection = self.get_connection_for_signal_endpoint(
+                function_name=function_name,
+                signal_endpoint=sig_endpoint_deleted
+            )
+            if sig_endpoint_deleted.signal_type == SignalType.SIGNAL:
+                osp_endpoint_connected = connection.Variable
+            elif sig_endpoint_deleted.signal_type == SignalType.SIGNAL_GROUP:
+                osp_endpoint_connected = connection.VariableGroup
+            else:
+                raise TypeError(f'Unknown signal type: {sig_endpoint_deleted.signal_type}')
+            component = self.get_component_by_name(osp_endpoint_connected.simulator)
+            component.get_variable_endpoint(osp_endpoint_connected.name).connected = False
+            self.delete_connection(
+                endpoint1=osp_var_endpoint_deleted, endpoint2=osp_endpoint_connected
+            )
+        return sig_endpoint_deleted
 
     def add_signal_endpoint(
         self,
@@ -1005,53 +1178,116 @@ class SimulationConfiguration:
         singal group connection  | OspVariableEndpoint | OspSignalEndpoint   | True
         signal group connection  | OspSingalEndpoint   | OspVariableEndpoint | True
         """
-        # Find the component and add the variable endpoint
+        # Find the component and add the variable/signal endpoint for the source
         if isinstance(source, OspVariableEndpoint):
-            source_endpoint = self.add_variable_endpoint(
-                component_name=source.simulator,
-                variable_name=source.name
-            )
+            source_component_function = self.get_component_by_name(source.simulator)
+            try:
+                source_endpoint = self.add_variable_endpoint(
+                    component_name=source.simulator,
+                    variable_name=source.name
+                )
+            except ValueError:
+                try:
+                    source_endpoint = \
+                        source_component_function.get_variable_endpoint_not_connected(source.name)
+                except ValueError as exc:
+                    raise ValueError(
+                        f'The source variable {source.name} is already connected.'
+                    ) from exc
         elif isinstance(source, OspSignalEndpoint):
-            source_endpoint = self.add_signal_endpoint(
-                function_name=source.function,
-                signal_type=SignalType.SIGNAL if not group else  SignalType.SIGNAL_GROUP,
-                signal_name=source.name,
-                causality=Causality.OUTPUT
-            )
+            source_component_function = self.get_function_by_name(source.function)
+            try:
+                source_endpoint = self.add_signal_endpoint(
+                    function_name=source.function,
+                    signal_type=SignalType.SIGNAL if not group else  SignalType.SIGNAL_GROUP,
+                    signal_name=source.name,
+                    causality=Causality.OUTPUT
+                )
+            except ValueError:
+                try:
+                    source_endpoint = \
+                        source_component_function.get_signal_endpoint_not_connected(source.name)
+                except ValueError as exc:
+                    raise ValueError(
+                        f'The source signal {source.name} is already connected.'
+                    ) from exc
         else:
             raise TypeError(
                 'Source endpoint should be either OspVariableEndpoint or OspSignalEndpoint.'
             )
+        if source_endpoint.causality not in [Causality.OUTPUT, Causality.INDEFINITE]:
+            raise TypeError(
+                'The source endpoint is not an output endpoint. '
+                'The source endpoint should be an output endpoint.'
+            )
+        source_endpoint.connected = True
+        # Find the component and add the variable/signal endpoint for the target
         if isinstance(target, OspVariableEndpoint):
             # First try to add the endpoint. If it already exists, it will return the existing one.
-            target_endpoint = self.add_variable_endpoint(
-                component_name=target.simulator,
-                variable_name=target.name
-            )
+            target_component_function = self.get_component_by_name(target.simulator)
+            try:
+                target_endpoint = self.add_variable_endpoint(
+                    component_name=target.simulator,
+                    variable_name=target.name
+                )
+            except ValueError:
+                try:
+                    target_endpoint = \
+                        target_component_function.get_variable_endpoint_not_connected(target.name)
+                except ValueError as exc:
+                    raise ValueError(
+                        f'The target endpoint {target.name} is already connected.'
+                    ) from exc
         elif isinstance(target, OspSignalEndpoint):
-            target_endpoint = self.add_signal_endpoint(
-                function_name=target.function,
-                signal_type=SignalType.SIGNAL if not group else  SignalType.SIGNAL_GROUP,
-                signal_name=target.name,
-                causality=Causality.INPUT
-            )
+            target_component_function = self.get_function_by_name(target.function)
+            try:
+                target_endpoint = self.add_signal_endpoint(
+                    function_name=target.function,
+                    signal_type=SignalType.SIGNAL if not group else  SignalType.SIGNAL_GROUP,
+                    signal_name=target.name,
+                    causality=Causality.INPUT
+                )
+            except ValueError:
+                try:
+                    target_endpoint = \
+                        target_component_function.get_signal_endpoint_not_connected(target.name)
+                except ValueError as exc:
+                    raise ValueError(
+                        f'The target endpoint {target.name} is already connected.'
+                    ) from exc
         else:
             raise TypeError(
                 'Target endpoint should be either OspVariableEndpoint or OspSignalEndpoint.'
             )
-        if source_endpoint.causality not in [Causality.OUTPUT, Causality.INDEFINITE]:
-            raise TypeError('The source endpoint should have an output causality')
         if target_endpoint.causality not in [Causality.INPUT, Causality.INDEFINITE]:
             raise TypeError('The target endpoint should have an input causality')
+        target_endpoint.connected = True
         connection = self.system_structure.add_connection(source=source, target=target, group=group)
         return connection
 
     def delete_connection(
             self,
-            endpoint1: OspVariableEndpoint,
-            endpoint2: OspVariableEndpoint
+            endpoint1: Union[OspVariableEndpoint, OspSignalEndpoint],
+            endpoint2: Union[OspVariableEndpoint, OspSignalEndpoint]
     ):
         """Deletes a connection having the given endpoints"""
+        # Find the component and change the connection status of the VariableEndpoint
+        if isinstance(endpoint1, OspVariableEndpoint):
+            component_function1 = self.get_component_by_name(endpoint1.simulator)
+            variable_endpoint1 = component_function1.get_variable_endpoint(endpoint1.name)
+            variable_endpoint1.connected = False
+        elif isinstance(endpoint1, OspSignalEndpoint):
+            component_function1 = self.get_function_by_name(endpoint1.function)
+            signal_endpoint1 = component_function1.get_signal_endpoint(endpoint1.name)
+            signal_endpoint1.connected = False
+        if isinstance(endpoint2, OspVariableEndpoint):
+            component_function2 = self.get_component_by_name(endpoint2.simulator)
+            variable_endpoint2 = component_function2.get_variable_endpoint(endpoint2.name)
+            variable_endpoint2.connected = False
+        elif isinstance(endpoint2, OspSignalEndpoint):
+            component_function2 = self.get_function_by_name(endpoint2.function)
+            signal_endpoint2 = component_function2.get_signal_endpoint(endpoint2.name)
+            signal_endpoint2.connected = False
         return self.system_structure.delete_connection(
             endpoint1=endpoint1,
             endpoint2=endpoint2
