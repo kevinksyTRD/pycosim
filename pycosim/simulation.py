@@ -844,7 +844,7 @@ class SimulationConfiguration:
             if fmu.osp_model_description is not None:
                 destination_file = os.path.join(
                     path_to_deploy,
-                    f'{fmu.name}_OspModelDescription.xml'
+                    f'{fmu.model_name}_OspModelDescription.xml'
                 )
                 with open(destination_file, 'wt') as osp_model_file:
                     osp_model_file.write(fmu.osp_model_description.to_xml_str())
