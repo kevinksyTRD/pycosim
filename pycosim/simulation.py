@@ -829,6 +829,8 @@ class SimulationConfiguration:
             if os.path.isdir(self._current_sim_path):
                 shutil.rmtree(self._current_sim_path)
         self._current_sim_path = path_to_deploy
+        if not os.path.isdir(path_to_deploy):
+            os.makedirs(path_to_deploy)
 
         # Create a fmu list from the components
         fmus = []
