@@ -939,7 +939,7 @@ class SimulationConfiguration:
                     os.path.join(rel_path_to_fmu, os.path.basename(fmu.fmu_file))
                 )
             if fmu.runs_on_proxy_server:
-                rel_path_to_fmu = ""
+                rel_path_to_fmu = "proxyfmu://"
 
             # Add the component to the system structure
             self.system_structure.add_simulator(OspSimulator(
