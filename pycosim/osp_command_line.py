@@ -14,6 +14,7 @@ from enum import Enum
 from subprocess import Popen, PIPE
 from sys import platform
 from typing import NamedTuple, List, Dict, Union, Tuple
+import time
 
 import pandas
 import yaml
@@ -103,12 +104,15 @@ class LoggingLevel(Enum):
     debug = 10
 
 
-def run_cli(args):
+def run_cli(args, log_output: bool = False) -> Tuple[str, str]:
     """Run the command line """
+    output = b""
+    log = b""
     try:
         with Popen(args=args, shell=True, stdout=PIPE, stderr=PIPE) as proc:
-            output = proc.stdout.read()
-            log = proc.stderr.read()
+            if log_output:
+                output = proc.stdout.read()
+                log = proc.stderr.read()
     except OSError as exception:
         raise OSError(f'{output}, {log}, {exception}')
 
@@ -214,7 +218,8 @@ def run_cosimulation(
         scenario: OSPScenario = None,
         duration: float = None,
         logging_level: LoggingLevel = LoggingLevel.warning,
-        logging_stream: bool = False
+        logging_stream: bool = False,
+        time_out_s: int = 60,
 ) -> SimulationResult:
     """Runs a co-simulation
 
@@ -231,6 +236,7 @@ def run_cosimulation(
             Valid arguments are 'error', 'warning', 'info', and 'debug'. Default is 'warning'.
         logging_stream(bool, optional): logging will be returned as a string if True value is given.
             Otherwise, logging will be only displayed.
+        time_out_s(int, optional): time out in seconds
     Return:
         SimulationResult: object containing:
             result: simulation result
@@ -277,12 +283,13 @@ def run_cosimulation(
         scenario_file_path = deploy_scenario(scenario, path_to_system_structure)
         args.append('--scenario=%s' % scenario_file_path)
     if duration:
-        logger.info('Simulation will run until {%s} seconds.', duration)
+        logger.info(f'Simulation will run until {duration} seconds.')
         args.append(f'--duration={duration}')
     args.append(f'--log-level={logging_level.name}')
 
     # Run simulation
     logger.info('Running simulation.')
+    simulation_start_time = time.time()
     _, log = run_cli(args)
     logger.info(log)
     error = [  # Find a error in the lines of logging and gather with a line break in between
@@ -294,9 +301,16 @@ def run_cosimulation(
     error = ''.join(error)
 
     # construct result from csvs that are created within last 30 seconds
-    output_files = [
-        file_name for file_name in os.listdir(output_file_path) if file_name.endswith('csv')
-    ]
+    output_files = []
+    while len(output_files) == 0 and time.time() - simulation_start_time < time_out_s:
+        output_files = [
+            file_name for file_name in os.listdir(output_file_path) if file_name.endswith('csv')
+        ]
+        time.sleep(0.5)
+    if len(output_files) == 0:
+        error += f'No output files were created within the time out {time_out_s} seconds.\n'
+    else:
+        logger.info(f"Simulation completed in {time.time() - simulation_start_time} seconds.")
     ago = dt.datetime.now() - dt.timedelta(seconds=30)
     output_files = [
         file_name for file_name in output_files
@@ -338,4 +352,3 @@ def run_cosimulation(
         log = ''
 
     return SimulationResult(result=result, log=log, error=error)
-

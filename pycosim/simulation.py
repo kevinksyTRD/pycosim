@@ -875,6 +875,7 @@ class SimulationConfiguration:
             self,
             duration: float,
             rel_path_to_sys_struct: str = '',
+            time_out_s: float = 60,
             logging_level: LoggingLevel = LoggingLevel.warning
     ):
         """Runs a simulation"""
@@ -889,6 +890,7 @@ class SimulationConfiguration:
             output_file_path=path_to_sys_struct,
             scenario=self._scenario,
             duration=duration,
+            time_out_s=time_out_s,
             logging_level=logging_level,
             logging_stream=True
         )
