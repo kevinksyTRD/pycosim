@@ -6,6 +6,7 @@ __all__ = ['convert_value_to_osp_type', 'clean_header', 'SimulationConfiguration
            'Component', 'InitialValues', 'SimulationOutput', 'SignalEndpoint', 'Function', 'SimulationConfiguration']
 
 # %% ../nbs/02_Simulation.ipynb 4
+import glob
 import os
 import uuid
 import shutil
@@ -663,6 +664,7 @@ class SimulationConfiguration:
 
     def __init__(
             self,
+            path_to_system: str = None,
             system_structure: Union[str, OspSystemStructure] = None,
             path_to_fmu: str = "",
             components: List[Component] = None,
@@ -689,46 +691,21 @@ class SimulationConfiguration:
             logging_config(optional): A logging configuration for the output of the simulation
                 given as a OSPScenario instance
         """
-        if system_structure:
-            self.system_structure = OspSystemStructure(xml_source=system_structure)
+        if path_to_system is not None:
+            # First check if the system structure is found in the path
+            system_structure = os.path.join(path_to_system, 'OspSystemStructure.xml')
+            if not os.path.isfile(system_structure):
+                raise FileNotFoundError(f'File {system_structure} does not exist.')
+            # Then check if the FMU is found in the path
+            path_to_fmu = glob.glob(os.path.join(path_to_system, "**/*.fmu"), recursive=True)
+            if len(path_to_fmu) == 0:
+                raise FileNotFoundError(f'No FMU found in {path_to_system}.')
+            path_to_fmu = os.path.dirname(path_to_fmu[0])
+        if system_structure is not None:
             self.components = []
             self.initial_values = []
             self.functions = []
-            for simulator in self.system_structure.Simulators:
-                if simulator.fmu_rel_path == "proxy-fmy://":
-                    raise TypeError(
-                        "OspSystemStructure is outdated for describing the proxy server. "
-                        "Please read the documentation for the new format. "
-                        "(https://open-simulation-platform.github.io/libcosim/distributed) "
-                    )
-                if simulator.fmu_rel_path == "proxyfmu://":
-                    proxy_server = DistributedSimulationProxyServer(
-                        source_text=simulator.source
-                    )
-                    if proxy_server.endpoint.is_local_host:
-                        file_path = os.path.join(path_to_fmu, proxy_server.file_path_fmu)
-                    else:
-                        file_path = proxy_server.file_path_fmu
-                    fmu = FMU(
-                        fmu_file=file_path,
-                        runs_on_proxy_server=True,
-                        network_endpoint=proxy_server.endpoint,
-                    )
-                else:
-                    fmu = FMU(fmu_file=os.path.join(path_to_fmu, simulator.source))
-                self.components.append(Component(
-                    name=simulator.name,
-                    fmu=fmu
-                ))
-                if simulator.InitialValues:
-                    self.initial_values.extend([InitialValues(
-                        component=simulator.name,
-                        variable=initial_value.variable,
-                        value=initial_value.value.value
-                    ) for initial_value in simulator.InitialValues])
-            if len(self.initial_values) == 0:
-                # noinspection PyTypeChecker
-                self.initial_values = None
+            self._load_system_from_file(system_structure, path_to_fmu)
         else:
             self.system_structure = OspSystemStructure()
             self.components = []
@@ -813,6 +790,239 @@ class SimulationConfiguration:
         rel_path = path_to_sys_struct[len(path_to_deploy):]
         depth = rel_path.count(os.sep)
         return '../' * depth
+
+    def _load_system_from_file(self, system_structure: str, path_to_fmu: str):
+        """Import system structure from file"""
+        self.system_structure = OspSystemStructure(xml_source=system_structure)
+        # Add components
+        for simulator in self.system_structure.Simulators:
+            if simulator.fmu_rel_path == "proxy-fmy://":
+                raise TypeError(
+                    "OspSystemStructure is outdated for describing the proxy server. "
+                    "Please read the documentation for the new format. "
+                    "(https://open-simulation-platform.github.io/libcosim/distributed) "
+                )
+            if simulator.fmu_rel_path == "proxyfmu://":
+                proxy_server = DistributedSimulationProxyServer(
+                    source_text=simulator.source
+                )
+                if proxy_server.endpoint.is_local_host:
+                    file_path = os.path.join(path_to_fmu, proxy_server.file_path_fmu)
+                else:
+                    file_path = proxy_server.file_path_fmu
+                fmu = FMU(
+                    fmu_file=file_path,
+                    runs_on_proxy_server=True,
+                    network_endpoint=proxy_server.endpoint,
+                )
+            else:
+                fmu = FMU(fmu_file=os.path.join(path_to_fmu, simulator.source))
+            self.components.append(Component(
+                name=simulator.name,
+                fmu=fmu
+            ))
+            if simulator.InitialValues:
+                self.initial_values.extend([InitialValues(
+                    component=simulator.name,
+                    variable=initial_value.variable,
+                    value=initial_value.value.value
+                ) for initial_value in simulator.InitialValues])
+
+        # Add functions
+        if self.system_structure.Functions is not None:
+            if self.system_structure.Functions.LinearTransformation is not None:
+                for linear_transformation in self.system_structure.Functions.LinearTransformation:
+                    self.functions.append(Function(
+                        name=linear_transformation.name,
+                        type=FunctionType.LINEAR_TRANSFORMATION,
+                        factor=linear_transformation.factor,
+                        offset=linear_transformation.offset
+                    ))
+            if self.system_structure.Functions.Sum is not None:
+                for sum_function in self.system_structure.Functions.Sum:
+                    self.functions.append(Function(
+                        name=sum_function.name,
+                        type=FunctionType.Sum,
+                        inputCount=sum_function.inputCount
+                    ))
+            if self.system_structure.Functions.VectorSum is not None:
+                for vector_sum in self.system_structure.Functions.VectorSum:
+                    self.functions.append(Function(
+                        name=vector_sum.name,
+                        type=FunctionType.VectorSum,
+                        inputCount=vector_sum.inputCount,
+                        dimension=vector_sum.dimension
+                    ))
+
+        # Add variable endpoints
+        if self.system_structure.Connections is not None:
+            if self.system_structure.Connections.SignalConnection is not None:
+                for connection in self.system_structure.Connections.SignalConnection:
+                    component = self.get_component_by_name(connection.Variable.simulator)
+                    var_endpoint = component.add_variable_endpoint(
+                        variable_name=connection.Variable.name
+                    )
+                    signal_causality = Causality.OUTPUT
+                    if var_endpoint.causality == Causality.OUTPUT:
+                        signal_causality = Causality.INPUT
+                    function = self.get_function_by_name(connection.Signal.function)
+                    function.add_signal_endpoint(
+                        signal_name=connection.Signal.name,
+                        signal_type=SignalType.SIGNAL,
+                        causality=signal_causality,
+                    )
+            if self.system_structure.Connections.SignalGroupConnection is not None:
+                for connection in self.system_structure.Connections.SignalGroupConnection:
+                    component = self.get_component_by_name(connection.VariableGroup.simulator)
+                    var_endpoint = component.add_variable_endpoint(
+                        variable_name=connection.VariableGroup.name
+                    )
+                    signal_causality = Causality.OUTPUT
+                    if var_endpoint.causality == Causality.OUTPUT:
+                        signal_causality = Causality.INPUT
+                    function = self.get_function_by_name(connection.SignalGroup.function)
+                    function.add_signal_endpoint(
+                        signal_name=connection.SignalGroup.name,
+                        signal_type=SignalType.SIGNAL_GROUP,
+                        causality=signal_causality,
+                    )
+            if self.system_structure.Connections.VariableConnection is not None:
+                for connection in self.system_structure.Connections.VariableConnection:
+                    for variable in connection.Variable:
+                        component = self.get_component_by_name(variable.simulator)
+                        component.add_variable_endpoint(variable_name=variable.name)
+            if self.system_structure.Connections.VariableGroupConnection is not None:
+                for connection in self.system_structure.Connections.VariableGroupConnection:
+                    for variable_group in connection.VariableGroup:
+                        component = self.get_component_by_name(variable_group.simulator)
+                        component.add_variable_endpoint(variable_name=variable_group.name)
+
+        if len(self.initial_values) == 0:
+            # noinspection PyTypeChecker
+            self.initial_values = None
+
+    def import_system(
+        self, system_config,
+        add_logging: bool = False,
+        add_scenario: bool = False
+    ):
+        """Import system structure from SimulationConfiguration"""
+        # Add components
+        for component in system_config.components:
+            osp_component = system_config.system_structure.get_component_by_name(component.name)
+            self.add_component(
+                name=component.name,
+                fmu=component.fmu,
+                stepSize=osp_component.stepSize,
+            )
+        # Add functions
+        for function in system_config.functions:
+            osp_function = self.system_structure.get_function_by_name(function.name)
+            if isinstance(osp_function, OspLinearTransformationFunction):
+                self.add_function(
+                    function_name=function.name,
+                    function_type=FunctionType.LinearTransformation,
+                    factor=osp_function.factor,
+                    offset=osp_function.offset,
+                )
+            if isinstance(osp_function, OspSumFunction):
+                self.add_function(
+                    function_name=function.name,
+                    function_type=FunctionType.Sum,
+                    inputCount=osp_function.inputCount,
+                )
+            if isinstance(osp_function, OspVectorSumFunction):
+                self.add_function(
+                    function_name=function.name,
+                    function_type=FunctionType.VectorSum,
+                    inputCount=osp_function.inputCount,
+                    dimension=osp_function.dimension,
+                )
+        # Add initial values
+        for initial_value in system_config.initial_values:
+            self.add_update_initial_value(
+                component_name=initial_value.component,
+                variable=initial_value.variable,
+                value=initial_value.value,
+            )
+        # Add connections
+        if system_config.system_structure.Connections.SignalConnection is not None:
+            for connection in system_config.system_structure.Connections.SignalConnection:
+                osp_variable = connection.Variable
+                component = system_config.get_component_by_name(osp_variable.simulator)
+                variable_endpoint = component.get_variable_endpoint(osp_variable.name)
+                if variable_endpoint.causality == Causality.OUTPUT:
+                    source = osp_variable
+                    target = connection.Signal
+                else:
+                    source = connection.Signal
+                    target = osp_variable
+                self.add_connection(source=source, target=target, group=False)
+        if system_config.system_structure.Connections.VariableConnection is not None:
+            for connection in system_config.system_structure.Connections.VariableConnection:
+                osp_variable1 = connection.Variable[0]
+                osp_variable2 = connection.Variable[1]
+                component1 = system_config.get_component_by_name(osp_variable1.simulator)
+                variable_endpoint1 = component1.get_variable_endpoint(osp_variable1.name)
+                if variable_endpoint1.causality == Causality.OUTPUT:
+                    source = osp_variable1
+                    target = osp_variable2
+                else:
+                    source = osp_variable2
+                    target = osp_variable1
+                self.add_connection(source=source, target=target, group=False)
+        if system_config.system_structure.Connections.VariableGroupConnection is not None:
+            for connection in system_config.system_structure.Connections.VariableGroupConnection:
+                osp_variable1 = connection.VariableGroup[0]
+                osp_variable2 = connection.VariableGroup[1]
+                component1 = system_config.get_component_by_name(osp_variable1.simulator)
+                variable_endpoint1 = component1.get_variable_endpoint(osp_variable1.name)
+                if variable_endpoint1.causality == Causality.OUTPUT:
+                    source = osp_variable1
+                    target = osp_variable2
+                else:
+                    source = osp_variable2
+                    target = osp_variable1
+                self.add_connection(source=source, target=target, group=True)
+        if system_config.system_structure.Connections.SignalGroupConnection is not None:
+            for connection in system_config.system_structure.Connections.SignalGroupConnection:
+                osp_variable = connection.VariableGroup
+                osp_signal = connection.SignalGroup
+                component = system_config.get_component_by_name(osp_variable.simulator)
+                variable_endpoint = component.get_variable_endpoint(osp_variable.name)
+                if variable_endpoint.causality == Causality.OUTPUT:
+                    source = osp_variable
+                    target = osp_signal
+                else:
+                    source = osp_signal
+                    target = osp_variable
+                self.add_connection(source=source, target=target, group=True)
+        # Add logging
+        if add_logging:
+            for each_simulator in system_config.logging_config.simulators:
+                for each_variable in each_simulator.variables:
+                    self.add_logging_variable(
+                        component_name=each_simulator.name,
+                        variable_name=each_variable.name,
+                        decimation_factor=each_simulator.decimation_factor,
+                    )
+        # Add scenario
+        if add_scenario:
+            for each_event in system_config.scenario.events:
+                self.add_event(
+                    time=each_event.time,
+                    component=each_event.model,
+                    variable=each_event.variable,
+                    value=each_event.value,
+                    action=each_event.action,
+                )
+
+    def import_system_from_file(self, system_structure: str, path_to_fmu: str):
+        """Import system structure from system_structure.xml"""
+        system_config_to_import = SimulationConfiguration(
+            system_structure=system_structure, path_to_fmu=path_to_fmu
+        )
+        self.import_system(system_config_to_import)
 
     def deploy_files_for_simulation(
             self,
@@ -964,6 +1174,61 @@ class SimulationConfiguration:
 
         # Delete from the system structure attribute
         self.system_structure.delete_simulator(component_name)
+
+        return True
+
+    def change_component_name(self, old_name: str, new_name: str) -> bool:
+        """Change the name of a component"""
+        if old_name not in self.get_component_names():
+            raise TypeError('No component is found with ')
+        if new_name in self.get_component_names():
+            raise TypeError('The new name duplicates with the existing components.')
+        # Change the name of the component
+        component = self.get_component_by_name(old_name)
+        component.name = new_name
+
+        # Change the name of the component in the system structure
+        osp_simulator = self.system_structure.get_component_by_name(old_name)
+        osp_simulator.name = new_name
+
+        # Change the name of the component in the scenario
+        if self.scenario is not None:
+            for event in self.scenario.events:
+                if event.model == old_name:
+                    event.model = new_name
+
+        # Change the name of the component in the logging configuration
+        if self.logging_config is not None:
+            for simulator in self.logging_config.simulators:
+                if simulator.name == old_name:
+                    simulator.name = new_name
+
+        # Change the name of the component in the initial values
+        if self.initial_values is not None:
+            for initial_value in self.initial_values:
+                if initial_value.component == old_name:
+                    initial_value.component = new_name
+
+        # Change the name of the component in the existing connections
+        if self.system_structure.Connections is not None:
+            if self.system_structure.Connections.SignalConnection is not None:
+                for connection in self.system_structure.Connections.SignalConnection:
+                    if connection.Variable.simulator == old_name:
+                        connection.Variable.simulator = new_name
+            if self.system_structure.Connections.SignalGroupConnection is not None:
+                for connection in self.system_structure.Connections.SignalGroupConnection:
+                    if connection.VariableGroup.simulator == old_name:
+                        connection.VariableGroup.simulator = new_name
+            if self.system_structure.Connections.VariableConnection is not None:
+                for connection in self.system_structure.Connections.VariableConnection:
+                    for variable in connection.Variable:
+                        if variable.simulator == old_name:
+                            variable.simulator = new_name
+            if self.system_structure.Connections.VariableGroupConnection is not None:
+                for connection in self.system_structure.Connections.VariableGroupConnection:
+                    for variable_group in connection.VariableGroup:
+                        if variable_group.simulator == old_name:
+                            variable_group.simulator = new_name
 
         return True
 
