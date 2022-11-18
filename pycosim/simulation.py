@@ -143,7 +143,7 @@ class FMU:
                 # Check if there is OSP Model description file in the same directory
                 osp_model_description_file = os.path.join(
                     os.path.dirname(self.fmu_file),
-                    '%s_OspModelDescription.xml' % self.name
+                    '%s_OspModelDescription.xml' % self.model_name
                 )
                 if os.path.isfile(osp_model_description_file):
                     self.import_osp_model_description(osp_model_description_file)
