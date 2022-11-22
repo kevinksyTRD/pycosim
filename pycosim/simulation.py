@@ -110,8 +110,8 @@ def convert_value_to_osp_type(
             raise TypeError(f'Expected a bool, got {type(value)}')
         return OspBoolean(value=bool(value))
     if type_var == osp_parser_sys.VariableType.Integer:
-        if not isinstance(value, int):
-            raise TypeError(f'Expected an int, got {type(value)}')
+        if not isinstance(value, int) and not isinstance(value, float):
+            raise TypeError(f'Expected an int or float, got {type(value)}')
         return OspInteger(value=int(value))
     if type_var == osp_parser_sys.VariableType.String:
         if not isinstance(value, str):
