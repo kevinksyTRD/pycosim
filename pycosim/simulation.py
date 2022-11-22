@@ -68,6 +68,7 @@ from pyOSPParser.system_configuration import (
     OspString,
     OspBoolean
 )
+import pyOSPParser.system_configuration as osp_parser_sys
 
 from .fmu import FMU
 from .fmu_proxy import DistributedSimulationProxyServer
@@ -91,7 +92,7 @@ logger.addHandler(ch)
 
 def convert_value_to_osp_type(
         value: Union[float, int, bool, str],
-        type_var: Union[Type[float], Type[int], Type[bool], Type[str]] = None
+        type_var: osp_parser_sys.VariableType
 ) -> Union[OspReal, OspInteger, OspString, OspBoolean]:
     """Convert a generic python variable type to OspVariable type used in the initial values
 
@@ -100,17 +101,22 @@ def convert_value_to_osp_type(
         type_var(Optional): Specify a type of the variable if one wants to force or make sure
             that the type is defined as intended.
     """
-    if type_var is not None:
-        value = type_var(value)
-    if isinstance(value, float):
-        return OspReal(value=value)
-    if isinstance(value, bool):
-        # This must be done before integer type check because Bool is a subclass of int.
-        return OspBoolean(value=value)
-    if isinstance(value, int):
-        return OspInteger(value=value)
-    if isinstance(value, str):
-        return OspString(value=value)
+    if type_var == osp_parser_sys.VariableType.Real:
+        if not isinstance(value, float) and not isinstance(value, int):
+            raise TypeError(f'Expected a float or int, got {type(value)}')
+        return OspReal(value=float(value))
+    if type_var == osp_parser_sys.VariableType.Boolean:
+        if not isinstance(value, bool):
+            raise TypeError(f'Expected a bool, got {type(value)}')
+        return OspBoolean(value=bool(value))
+    if type_var == osp_parser_sys.VariableType.Integer:
+        if not isinstance(value, int):
+            raise TypeError(f'Expected an int, got {type(value)}')
+        return OspInteger(value=int(value))
+    if type_var == osp_parser_sys.VariableType.String:
+        if not isinstance(value, str):
+            raise TypeError(f'Expected a str, got {type(value)}')
+        return OspString(value=str(value))
     raise ValueError(f'Value {value} is not a valid type')
 
 
@@ -337,6 +343,7 @@ class InitialValues:
     component: str
     variable: str
     value: Union[float, int, bool, str]
+    type_var: osp_parser_sys.VariableType
 
 
 @dataclass
@@ -594,7 +601,8 @@ class SimulationConfiguration:
                 self.initial_values.extend([InitialValues(
                     component=simulator.name,
                     variable=initial_value.variable,
-                    value=initial_value.value.value
+                    value=initial_value.value.value,
+                    type_var=initial_value.type_var
                 ) for initial_value in simulator.InitialValues])
 
         # Add functions
@@ -1336,32 +1344,38 @@ class SimulationConfiguration:
 
         # Check if the initial value is valid
         component = self.get_component_by_name(component_name)
-        if variable not in component.fmu.get_parameter_names() and \
-                variable not in component.fmu.get_input_names():
+        if variable in component.fmu.get_parameter_names():
+            osp_variable = next(filter(
+                lambda x: x.get("name") == variable,
+                component.fmu.parameters
+            ))
+        elif variable in component.fmu.get_input_names():
+            osp_variable = next(filter(
+                lambda x: x.get("name") == variable,
+                component.fmu.inputs
+            ))
+        else:
             raise TypeError(
-                f'No variable is found in the inputs / parameters of '
-                f'the model with the name {variable}. You cannot set '
-                f'initial value for outputs.'
+                f'The variable {variable} is not found in the inputs or parameters of the model.'
             )
+        type_var = osp_parser_sys.VariableType[osp_variable.get('type')]
 
         # Search for an initial value that already exists. Otherwise, create a new instance
         try:
             init_value = self.get_initial_value_by_variable(component_name, variable)
             self.initial_values.pop(self.initial_values.index(init_value))
-            init_value = InitialValues(
-                component=component_name,
-                variable=variable,
-                value=value
-            )
         except TypeError:
-            init_value = InitialValues(
-                component=component_name,
-                variable=variable,
-                value=value
-            )
+            pass
+
+        init_value = InitialValues(
+            component=component_name,
+            variable=variable,
+            value=value,
+            type_var=type_var
+        )
 
         self.initial_values.append(init_value)
-        value_osp_type = convert_value_to_osp_type(value=value, type_var=type_value)
+        value_osp_type = convert_value_to_osp_type(value=value, type_var=type_var)
         self.system_structure.add_update_initial_value(
             component_name=component_name,
             init_value=OspInitialValue(variable=variable, value=value_osp_type)
