@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from logging import Logger
 from sys import platform
-from typing import Union, List, Type, Optional, Any
+from typing import Union, List, Type, Optional, Any, Dict
 
 from pyOSPParser.logging_configuration import (
     OspLoggingConfiguration, OspSimulatorForLogging
@@ -71,7 +71,7 @@ from pyOSPParser.system_configuration import (
 import pyOSPParser.system_configuration as osp_parser_sys
 
 from .fmu import FMU
-from .fmu_proxy import DistributedSimulationProxyServer
+from .fmu_proxy import DistributedSimulationProxyServer, PROXY_HEADER, PROXY_HEADER_OLD
 from pycosim.osp_command_line import (
     run_cosimulation, LoggingLevel, SimulationResult, deploy_files_for_cosimulation
 )
@@ -215,15 +215,19 @@ def get_variables_from_osp_variable_group(osp_variable_group: Union[
 class Component:
     """Component used in SimulationConfiguration"""
     name: str
-    fmu: Optional[FMU] = None
-    distributed_simulation_setting: DistributedSimulationProxyServer = None
+    fmu: FMU
+    step_size: float = None
     variable_end_points: List[VariableEndpoint] = field(default_factory=list)
     _inputs_used_as_variable_end_points: List[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        if self.step_size is None:
+            self.step_size = self.fmu.model_description.defaultExperiment.stepSize
 
     @property
     def runs_on_network(self) -> bool:
         """Returns True if the component runs on a network"""
-        return self.distributed_simulation_setting is not None
+        return self.fmu.runs_on_proxy_server
 
     def get_unconnected_variable_endpoint_with_variable(
         self, variable_name: str
@@ -336,6 +340,28 @@ class Component:
                 return variable_endpoint
         raise ValueError(f'Variable {variable_name} cannot be found in the variable groups')
 
+    def get_osp_simulator(self, fmu_rel_path: str = "", for_old_cosim: bool = False) \
+            -> OspSimulator:
+        """Get OSP simulator"""
+        # Get source string depending on if the fmu is a network fmu or not
+        source = self.fmu.get_source_for_deployment(for_old_cosim=for_old_cosim)
+        if not self.fmu.is_remote_network_fmu and not for_old_cosim:
+            file_path = source.split("?")[1].replace("file=", "")
+            file_path = f"{fmu_rel_path}/{file_path}"
+            source = f"file={file_path}"
+
+        # Replace fmu_rel_path if it is a network fmu
+        if self.runs_on_network:
+            fmu_rel_path = PROXY_HEADER if not for_old_cosim else PROXY_HEADER_OLD
+
+        # Add the component to the system structure
+        return OspSimulator(
+            name=self.name,
+            source=source,
+            stepSize=self.step_size,
+            fmu_rel_path=fmu_rel_path
+        )
+
 
 @dataclass
 class InitialValues:
@@ -344,6 +370,26 @@ class InitialValues:
     variable: str
     value: Union[float, int, bool, str]
     type_var: osp_parser_sys.VariableType
+
+    @property
+    def osp_initial_value(self) -> OspInitialValue:
+        """Get OSP InitialValue"""
+        return OspInitialValue(
+            component=self.component
+        )
+
+    @property
+    def osp_value(self) -> Union[OspReal, OspInteger, OspBoolean, OspString]:
+        """Get OSP Value"""
+        if self.type_var == osp_parser_sys.VariableType.Real:
+            return OspReal(value=self.value)
+        if self.type_var == osp_parser_sys.VariableType.Integer:
+            return OspInteger(value=self.value)
+        if self.type_var == osp_parser_sys.VariableType.Boolean:
+            return OspBoolean(value=self.value)
+        if self.type_var == osp_parser_sys.VariableType.String:
+            return OspString(value=self.value)
+        raise TypeError(f'Variable type {self.type_var} is not supported.')
 
 
 @dataclass
@@ -380,17 +426,14 @@ class Function:
     signal_endpoints: List[SignalEndpoint] = field(default_factory=list)
     _inputs_used_as_signal_endpoints: List[str] = field(default_factory=list)
 
-    def add_signal_endpoint(self, signal_name: str, signal_type: SignalType ,causality: Causality) -> SignalEndpoint:
+    def add_signal_endpoint(self, signal_name: str, causality: Causality) -> SignalEndpoint:
         """Add a variable endpoint"""
         if causality == Causality.INPUT:
             if signal_name in self._inputs_used_as_signal_endpoints:
                 raise ValueError(f'Signal {signal_name} is already used as an input.')
             self._inputs_used_as_signal_endpoints.append(signal_name)
-        if signal_type == SignalType.SIGNAL_GROUP:
-            if self.inputCount < 2:
-                raise ValueError(
-                    f'Function {self.name} should have inputCount > 2 to add signal group.'
-                )
+        signal_type = SignalType.SIGNAL_GROUP \
+            if self.type == FunctionType.VectorSum else SignalType.SIGNAL
         signal_endpoint = SignalEndpoint(
             signal_name=signal_name,
             signal_type=signal_type,
@@ -431,9 +474,167 @@ class Function:
             raise ValueError(f'There is no unconnected signal endpoint with '
                              f'the name ({signal_name})in the component.') from exc
 
+    @property
+    def function_parameters(self) -> Dict[str, Union[float, int]]:
+        """Return function parameters"""
+        if self.type == FunctionType.LinearTransformation:
+            return dict(factor=self.factor, offset=self.offset)
+        elif self.type == FunctionType.Sum:
+            return dict(inputCount=self.inputCount)
+        elif self.type == FunctionType.VectorSum:
+            return dict(inputCount=self.inputCount, dimension=self.dimension)
+        else:
+            raise ValueError(f'Function type {self.type} is not supported.')
+
+
+OspConnection = Union[
+    OspVariableConnection, OspSignalConnection, OspVariableGroupConnection, OspSignalGroupConnection
+]
+
+
+class Connection:
+    """Connection used in SimulationConfiguration"""
+    source: Union[Component, Function] = None
+    target: Union[Component, Function] = None
+    source_endpoint: Union[VariableEndpoint, SignalEndpoint] = None
+    target_endpoint: Union[VariableEndpoint, SignalEndpoint] = None
+
+    def __init__(
+        self,
+        end_comp_func1: Union[Component, Function],
+        end_comp_func2: Union[Component, Function],
+        end_var_sig1: str,
+        end_var_sig2: str
+    ):
+        try:
+            component1 = next(filter(
+                lambda comp_func: isinstance(comp_func, Component),
+                [end_comp_func1, end_comp_func2]
+            ))
+        except StopIteration as exc:
+            raise ValueError('At least one of the components must be a component.') from exc
+        try:
+            var_endpoint1 = component1.get_variable_endpoint(end_var_sig1)
+        except ValueError:
+            var_endpoint1 = component1.add_variable_endpoint(end_var_sig1)
+        if var_endpoint1.causality == Causality.INPUT:
+            self.target = end_comp_func1
+            self.target_endpoint = var_endpoint1
+            self.source = end_comp_func2
+            if isinstance(end_comp_func2, Component):
+                try:
+                    self.source_endpoint = end_comp_func2.get_variable_endpoint(end_var_sig2)
+                except ValueError:
+                    self.source_endpoint = end_comp_func2.add_variable_endpoint(end_var_sig2)
+                if self.source_endpoint.causality == Causality.INPUT:
+                    raise ValueError('The source variable endpoint must not be an input.')
+            else:
+                try:
+                    self.source_endpoint = end_comp_func2.get_signal_endpoint(end_var_sig2)
+                except ValueError:
+                    self.source_endpoint = end_comp_func2.add_signal_endpoint(
+                        signal_name=end_var_sig2,
+                        causality=Causality.OUTPUT
+                    )
+        else:
+            self.source = end_comp_func1
+            self.source_endpoint = var_endpoint1
+            self.target = end_comp_func2
+            if isinstance(end_comp_func2, Component):
+                try:
+                    self.target_endpoint = end_comp_func2.get_variable_endpoint(end_var_sig2)
+                except ValueError:
+                    self.target_endpoint = end_comp_func2.add_variable_endpoint(end_var_sig2)
+                if self.target_endpoint.causality == Causality.OUTPUT:
+                    raise ValueError('The target variable endpoint must not be an output.')
+            else:
+                try:
+                    self.target_endpoint = end_comp_func2.get_signal_endpoint(end_var_sig2)
+                except ValueError:
+                    self.target_endpoint = end_comp_func2.add_signal_endpoint(
+                        signal_name=end_var_sig2,
+                        causality=Causality.INPUT
+                    )
+        self.target_endpoint.connected = True
+        self.source_endpoint.connected = True
+
+    @property
+    def is_signal(self) -> bool:
+        """Check if connection is signal"""
+        return isinstance(self.source_endpoint, SignalEndpoint) or \
+            isinstance(self.target_endpoint, SignalEndpoint)
+
+    @property
+    def is_group_connection(self) -> bool:
+        """Check if connection is group connection"""
+        result = False
+        if isinstance(self.source_endpoint, VariableEndpoint):
+            result = self.source_endpoint.variable_type == VariableType.VARIABLE_GROUP
+        if isinstance(self.target_endpoint, VariableEndpoint):
+            result = self.target_endpoint.variable_type == VariableType.VARIABLE_GROUP
+        return result
+
+    @property
+    def osp_connection(self) -> OspConnection:
+        """Get OSP Connection"""
+        if self.is_signal:
+            if isinstance(self.source, Function):
+                variable_endpoint = self.target_endpoint.get_osp_variable_endpoint(
+                    component_name=self.target.name
+                )
+                signal_endpoint = self.source_endpoint.get_osp_signal_endpoint(
+                    function_name=self.source.name
+                )
+            else:
+                variable_endpoint = self.source_endpoint.get_osp_variable_endpoint(
+                    component_name=self.source.name
+                )
+                signal_endpoint = self.target_endpoint.get_osp_signal_endpoint(
+                    function_name=self.target.name
+                )
+            if self.is_group_connection:
+                return OspSignalGroupConnection(
+                    VariableGroup=variable_endpoint,
+                    SignalGroup=signal_endpoint
+                )
+            return OspSignalConnection(
+                Variable=variable_endpoint,
+                Signal=signal_endpoint
+            )
+
+        variables = [
+            self.source_endpoint.get_osp_variable_endpoint(component_name=self.source.name),
+            self.target_endpoint.get_osp_variable_endpoint(component_name=self.target.name)
+        ]
+        if self.is_group_connection:
+            return OspVariableGroupConnection(VariableGroup=variables)
+        return OspVariableConnection(Variable=variables)
+
+    def has_endpoint_for(self, endpoint: Union[OspVariableEndpoint, OspSignalEndpoint]) -> bool:
+        """Check if connection has endpoint"""
+        if isinstance(endpoint, OspVariableEndpoint):
+            if self.source.name == endpoint.simulator and self.source_endpoint.name == endpoint.name:
+                return True
+            if self.target.name == endpoint.simulator and self.target_endpoint.name == endpoint.name:
+                return True
+            return False
+        elif isinstance(endpoint, OspSignalEndpoint):
+            if self.source.name == endpoint.function and self.source_endpoint.name == endpoint.name:
+                return True
+            if self.target.name == endpoint.function and self.target_endpoint.name == endpoint.name:
+                return True
+            return False
+        else:
+            raise TypeError('Endpoint must be of type OspVariableEndpoint or OspSignalEndpoint.')
+
 
 class SimulationConfiguration:
     """Class for running simulation"""
+    components: List[Component] = None
+    initial_values: List[InitialValues] = None
+    functions: List[Function] = None
+    connections: List[Connection] = None
+    time_step: float = None
     _scenario: OSPScenario = None
     _logging_config: OspLoggingConfiguration = None
     _current_sim_path: str = None
@@ -443,10 +644,7 @@ class SimulationConfiguration:
             path_to_system: str = None,
             system_structure: Union[str, OspSystemStructure] = None,
             path_to_fmu: str = "",
-            components: List[Component] = None,
-            initial_values: List[InitialValues] = None,
-            scenario: OSPScenario = None,
-            logging_config: OspLoggingConfiguration = None,
+            time_step: float = 0.01,
     ):
         """Constructor for SimulationConfiguration class
         If one wants to create the system structure from scratch, one can use the
@@ -467,38 +665,28 @@ class SimulationConfiguration:
             logging_config(optional): A logging configuration for the output of the simulation
                 given as a OSPScenario instance
         """
+        self.components = []
+        self.initial_values = []
+        self.functions = []
+        self.connections = []
+        self.time_step = time_step
         if path_to_system is not None:
             # First check if the system structure is found in the path
-            system_structure = os.path.join(path_to_system, 'OspSystemStructure.xml')
-            if not os.path.isfile(system_structure):
-                raise FileNotFoundError(f'File {system_structure} does not exist.')
+            system_structure = glob.glob(
+                os.path.join(path_to_system, "**/*.OspSystemStructure.xml")
+            )
+            if len(system_structure) == 0:
+                raise FileNotFoundError(
+                    f"System structure not found in {path_to_system}"
+                )
+            system_structure = system_structure[0]
             # Then check if the FMU is found in the path
             path_to_fmu = glob.glob(os.path.join(path_to_system, "**/*.fmu"), recursive=True)
             if len(path_to_fmu) == 0:
                 raise FileNotFoundError(f'No FMU found in {path_to_system}.')
             path_to_fmu = os.path.dirname(path_to_fmu[0])
         if system_structure is not None:
-            self.components = []
-            self.initial_values = []
-            self.functions = []
             self._load_system_from_file(system_structure, path_to_fmu)
-        else:
-            self.system_structure = OspSystemStructure()
-            self.components = []
-            self.initial_values = []
-            self.functions = []
-            if components:
-                for comp in components:
-                    assert isinstance(comp, Component)
-                self.components = components
-            if initial_values:
-                for init_value in initial_values:
-                    assert isinstance(init_value, InitialValues)
-                self.initial_values = initial_values
-        if scenario:
-            self.scenario = scenario
-        if logging_config:
-            self.logging_config = logging_config
 
     def __del__(self):
         """Destructor for the class
@@ -508,6 +696,40 @@ class SimulationConfiguration:
         if self._current_sim_path:
             if os.path.isdir(self._current_sim_path):
                 shutil.rmtree(self._current_sim_path)
+
+    def get_system_structure(
+            self,
+            fmu_rel_path: str = "",
+            for_old_cosim: bool = False,
+    ) -> OspSystemStructure:
+        """Get system structure
+        Args:
+            fmu_rel_path: Relative path to the FMU files.
+            for_old_cosim: If True, the system structure is created for the old cosim
+            (only relevant for network fmus)
+        Returns:
+            System structure as an OspSystemStructure instance
+        """
+        system_structure = OspSystemStructure()
+        system_structure.BaseStepSize = self.time_step
+        for component in self.components:
+            system_structure.add_simulator(component.get_osp_simulator(
+                fmu_rel_path=fmu_rel_path, for_old_cosim=for_old_cosim
+            ))
+        for function in self.functions:
+            system_structure.add_function(
+                function_name=function.name,
+                function_type=function.type,
+                **function.function_parameters
+            )
+        for initial_value in self.initial_values:
+            system_structure.add_update_initial_value(
+                component_name=initial_value.component,
+                init_value=initial_value.osp_initial_value
+            )
+        for connection in self.connections:
+            system_structure.add_connection(connection.osp_connection)
+        return system_structure
 
     @property
     def scenario(self):
@@ -537,7 +759,7 @@ class SimulationConfiguration:
     @staticmethod
     def prepare_temp_dir_for_simulation() -> str:
         """create a temporatry directory for the simulation"""
-        base_dir_name = os.path.join('pycosim_tmp', f'sim_{uuid.uuid4().__str__()}')
+        base_dir_name = os.path.join('pycosim_tmp', f'sim_{str(uuid.uuid4())}')
 
         if platform.startswith('win'):
             path = os.path.join(os.environ.get('TEMP'), base_dir_name)
@@ -569,21 +791,27 @@ class SimulationConfiguration:
 
     def _load_system_from_file(self, system_structure: str, path_to_fmu: str):
         """Import system structure from file"""
-        self.system_structure = OspSystemStructure(xml_source=system_structure)
+        system_structure = OspSystemStructure(xml_source=system_structure)
+        fmus = [
+            FMU(fmu_file=fmu_file) for fmu_file in glob.glob(os.path.join(path_to_fmu, "*.fmu"))
+        ]
+        self.time_step = system_structure.BaseStepSize
+
+        def get_fmu_from_guid(fmus_to_search: List[FMU], guid: str):
+            return next((each for each in fmus_to_search if each.guid == guid), None)
+
         # Add components
-        for simulator in self.system_structure.Simulators:
-            if simulator.fmu_rel_path == "proxy-fmy://":
-                raise TypeError(
-                    "OspSystemStructure is outdated for describing the proxy server. "
-                    "Please read the documentation for the new format. "
-                    "(https://open-simulation-platform.github.io/libcosim/distributed) "
-                )
-            if simulator.fmu_rel_path == "proxyfmu://":
+        for simulator in system_structure.Simulators:
+            if simulator.fmu_rel_path in [PROXY_HEADER, PROXY_HEADER_OLD]:
                 proxy_server = DistributedSimulationProxyServer(
                     source_text=simulator.source
                 )
                 if proxy_server.endpoint.is_local_host:
-                    file_path = os.path.join(path_to_fmu, proxy_server.file_path_fmu)
+                    if proxy_server.is_for_new_cosim:
+                        file_path = os.path.join(path_to_fmu, proxy_server.file_path_fmu)
+                    else:
+                        fmu = get_fmu_from_guid(fmus, proxy_server.guid)
+                        file_path = fmu.fmu_file
                 else:
                     file_path = proxy_server.file_path_fmu
                 fmu = FMU(
@@ -606,73 +834,52 @@ class SimulationConfiguration:
                 ) for initial_value in simulator.InitialValues])
 
         # Add functions
-        if self.system_structure.Functions is not None:
-            if self.system_structure.Functions.LinearTransformation is not None:
-                for linear_transformation in self.system_structure.Functions.LinearTransformation:
-                    self.functions.append(Function(
-                        name=linear_transformation.name,
-                        type=FunctionType.LINEAR_TRANSFORMATION,
+        if system_structure.Functions is not None:
+            if system_structure.Functions.LinearTransformation is not None:
+                for linear_transformation in system_structure.Functions.LinearTransformation:
+                    self.add_function(
+                        function_name=linear_transformation.name,
+                        function_type=FunctionType.LinearTransformation,
                         factor=linear_transformation.factor,
                         offset=linear_transformation.offset
-                    ))
-            if self.system_structure.Functions.Sum is not None:
-                for sum_function in self.system_structure.Functions.Sum:
-                    self.functions.append(Function(
-                        name=sum_function.name,
-                        type=FunctionType.Sum,
+                    )
+            if system_structure.Functions.Sum is not None:
+                for sum_function in system_structure.Functions.Sum:
+                    self.add_function(
+                        function_name=sum_function.name,
+                        function_type=FunctionType.Sum,
                         inputCount=sum_function.inputCount
-                    ))
-            if self.system_structure.Functions.VectorSum is not None:
-                for vector_sum in self.system_structure.Functions.VectorSum:
-                    self.functions.append(Function(
-                        name=vector_sum.name,
-                        type=FunctionType.VectorSum,
+                    )
+            if system_structure.Functions.VectorSum is not None:
+                for vector_sum in system_structure.Functions.VectorSum:
+                    self.add_function(
+                        function_name=vector_sum.name,
+                        function_type=FunctionType.VectorSum,
                         inputCount=vector_sum.inputCount,
                         dimension=vector_sum.dimension
-                    ))
+                    )
 
-        # Add variable endpoints
-        if self.system_structure.Connections is not None:
-            if self.system_structure.Connections.SignalConnection is not None:
-                for connection in self.system_structure.Connections.SignalConnection:
-                    component = self.get_component_by_name(connection.Variable.simulator)
-                    var_endpoint = component.add_variable_endpoint(
-                        variable_name=connection.Variable.name
+        # Add connections
+        if system_structure.Connections is not None:
+            if system_structure.Connections.SignalConnection is not None:
+                for connection in system_structure.Connections.SignalConnection:
+                    self.add_connection(endpoint1=connection.Variable, endpoint2=connection.Signal)
+            if system_structure.Connections.SignalGroupConnection is not None:
+                for connection in system_structure.Connections.SignalGroupConnection:
+                    self.add_connection(
+                        endpoint1=connection.VariableGroup, endpoint2=connection.SignalGroup
                     )
-                    signal_causality = Causality.OUTPUT
-                    if var_endpoint.causality == Causality.OUTPUT:
-                        signal_causality = Causality.INPUT
-                    function = self.get_function_by_name(connection.Signal.function)
-                    function.add_signal_endpoint(
-                        signal_name=connection.Signal.name,
-                        signal_type=SignalType.SIGNAL,
-                        causality=signal_causality,
+            if system_structure.Connections.VariableConnection is not None:
+                for connection in system_structure.Connections.VariableConnection:
+                    self.add_connection(
+                        endpoint1=connection.Variable[0], endpoint2=connection.Variable[1]
                     )
-            if self.system_structure.Connections.SignalGroupConnection is not None:
-                for connection in self.system_structure.Connections.SignalGroupConnection:
-                    component = self.get_component_by_name(connection.VariableGroup.simulator)
-                    var_endpoint = component.add_variable_endpoint(
-                        variable_name=connection.VariableGroup.name
+            if system_structure.Connections.VariableGroupConnection is not None:
+                for connection in system_structure.Connections.VariableGroupConnection:
+                    self.add_connection(
+                        endpoint1=connection.VariableGroup[0],
+                        endpoint2=connection.VariableGroup[1]
                     )
-                    signal_causality = Causality.OUTPUT
-                    if var_endpoint.causality == Causality.OUTPUT:
-                        signal_causality = Causality.INPUT
-                    function = self.get_function_by_name(connection.SignalGroup.function)
-                    function.add_signal_endpoint(
-                        signal_name=connection.SignalGroup.name,
-                        signal_type=SignalType.SIGNAL_GROUP,
-                        causality=signal_causality,
-                    )
-            if self.system_structure.Connections.VariableConnection is not None:
-                for connection in self.system_structure.Connections.VariableConnection:
-                    for variable in connection.Variable:
-                        component = self.get_component_by_name(variable.simulator)
-                        component.add_variable_endpoint(variable_name=variable.name)
-            if self.system_structure.Connections.VariableGroupConnection is not None:
-                for connection in self.system_structure.Connections.VariableGroupConnection:
-                    for variable_group in connection.VariableGroup:
-                        component = self.get_component_by_name(variable_group.simulator)
-                        component.add_variable_endpoint(variable_name=variable_group.name)
 
         if len(self.initial_values) == 0:
             # noinspection PyTypeChecker
@@ -694,27 +901,14 @@ class SimulationConfiguration:
             )
         # Add functions
         for function in system_config.functions:
-            osp_function = self.system_structure.get_function_by_name(function.name)
-            if isinstance(osp_function, OspLinearTransformationFunction):
-                self.add_function(
-                    function_name=function.name,
-                    function_type=FunctionType.LinearTransformation,
-                    factor=osp_function.factor,
-                    offset=osp_function.offset,
-                )
-            if isinstance(osp_function, OspSumFunction):
-                self.add_function(
-                    function_name=function.name,
-                    function_type=FunctionType.Sum,
-                    inputCount=osp_function.inputCount,
-                )
-            if isinstance(osp_function, OspVectorSumFunction):
-                self.add_function(
-                    function_name=function.name,
-                    function_type=FunctionType.VectorSum,
-                    inputCount=osp_function.inputCount,
-                    dimension=osp_function.dimension,
-                )
+            self.add_function(
+                function_name=function.name,
+                function_type=function.type,
+                factor=function.factor,
+                offset=function.offset,
+                inputCount=function.inputCount,
+                dimension=function.dimension
+            )
         # Add initial values
         for initial_value in system_config.initial_values:
             self.add_update_initial_value(
@@ -723,57 +917,20 @@ class SimulationConfiguration:
                 value=initial_value.value,
             )
         # Add connections
-        if system_config.system_structure.Connections.SignalConnection is not None:
-            for connection in system_config.system_structure.Connections.SignalConnection:
-                osp_variable = connection.Variable
-                component = system_config.get_component_by_name(osp_variable.simulator)
-                variable_endpoint = component.get_variable_endpoint(osp_variable.name)
-                if variable_endpoint.causality == Causality.OUTPUT:
-                    source = osp_variable
-                    target = connection.Signal
-                else:
-                    source = connection.Signal
-                    target = osp_variable
-                self.add_connection(source=source, target=target, group=False)
-        if system_config.system_structure.Connections.VariableConnection is not None:
-            for connection in system_config.system_structure.Connections.VariableConnection:
-                osp_variable1 = connection.Variable[0]
-                osp_variable2 = connection.Variable[1]
-                component1 = system_config.get_component_by_name(osp_variable1.simulator)
-                variable_endpoint1 = component1.get_variable_endpoint(osp_variable1.name)
-                if variable_endpoint1.causality == Causality.OUTPUT:
-                    source = osp_variable1
-                    target = osp_variable2
-                else:
-                    source = osp_variable2
-                    target = osp_variable1
-                self.add_connection(source=source, target=target, group=False)
-        if system_config.system_structure.Connections.VariableGroupConnection is not None:
-            for connection in system_config.system_structure.Connections.VariableGroupConnection:
-                osp_variable1 = connection.VariableGroup[0]
-                osp_variable2 = connection.VariableGroup[1]
-                component1 = system_config.get_component_by_name(osp_variable1.simulator)
-                variable_endpoint1 = component1.get_variable_endpoint(osp_variable1.name)
-                if variable_endpoint1.causality == Causality.OUTPUT:
-                    source = osp_variable1
-                    target = osp_variable2
-                else:
-                    source = osp_variable2
-                    target = osp_variable1
-                self.add_connection(source=source, target=target, group=True)
-        if system_config.system_structure.Connections.SignalGroupConnection is not None:
-            for connection in system_config.system_structure.Connections.SignalGroupConnection:
-                osp_variable = connection.VariableGroup
-                osp_signal = connection.SignalGroup
-                component = system_config.get_component_by_name(osp_variable.simulator)
-                variable_endpoint = component.get_variable_endpoint(osp_variable.name)
-                if variable_endpoint.causality == Causality.OUTPUT:
-                    source = osp_variable
-                    target = osp_signal
-                else:
-                    source = osp_signal
-                    target = osp_variable
-                self.add_connection(source=source, target=target, group=True)
+        for connection in system_config.connections:
+            source_endpoint = connection.source_endpoint.get_osp_variable_endpoint(
+                component_name=connection.source.name
+            ) if isinstance(connection.source_endpoint, VariableEndpoint) else \
+                connection.source_endpoint.get_osp_signal_endpoint(
+                    component_name=connection.source.name
+                )
+            target_endpoint = connection.target_endpoint.get_osp_variable_endpoint(
+                component_name=connection.target.name
+            ) if isinstance(connection.target_endpoint, VariableEndpoint) else \
+                connection.target_endpoint.get_osp_signal_endpoint(
+                    component_name=connection.target.name
+                )
+            self.add_connection(endpoint1=source_endpoint, endpoint2=target_endpoint)
         # Add logging
         if add_logging:
             for each_simulator in system_config.logging_config.simulators:
@@ -810,6 +967,7 @@ class SimulationConfiguration:
             self,
             path_to_deploy: str,
             rel_path_to_system_structure: str = '',
+            for_old_cosim: bool = False,
     ) -> str:
         """Deploy files for the simulation
         Returns:
@@ -828,19 +986,15 @@ class SimulationConfiguration:
         fmu_rel_path = self.get_fmu_rel_path(
             path_to_deploy=path_to_deploy, path_to_sys_struct=path_to_system_structure
         )
-        for component in self.system_structure.Simulators:
-            if component.fmu_rel_path != "proxyfmu://":
-                component.fmu_rel_path = fmu_rel_path
-            else:
-                if component.source.startswith("localhost") or component.source.startswith(
-                        "127.0.0.1"):
-                    address_query, file_name = component.source.split("=")
-                    component.source = f"{address_query}={fmu_rel_path}{file_name}"
+        system_structure = self.get_system_structure(
+            fmu_rel_path=fmu_rel_path,
+            for_old_cosim=for_old_cosim,
+        )
 
         return deploy_files_for_cosimulation(
             path_to_deploy=path_to_deploy,
             fmus=self.fmus,
-            system_structure=self.system_structure,
+            system_structure=system_structure,
             rel_path_to_system_structure=rel_path_to_system_structure,
             logging_config=self.logging_config,
             scenario=self.scenario,
@@ -881,16 +1035,14 @@ class SimulationConfiguration:
     def add_component(
             self,
             name: str,
-            fmu: Optional[FMU] = None,
+            fmu: FMU,
             stepSize: float = None,
-            rel_path_to_fmu: str = '',
     ) -> Component:
         """Add a component to the system structure
 
         Args:
             name: Name of the component
-            fmu(Optional): The model for the component given as FMU instance.
-                If it is a network fmu from a remote server, no need to be provided
+            fmu: The model for the component given as FMU instance.
             stepSize(optional): Step size for the simulator in seconds. If not given, its default
             value is used.
             rel_path_to_fmu(optional): Relative path to fmu from a system structure file.
@@ -903,27 +1055,7 @@ class SimulationConfiguration:
             component = Component(name=name, fmu=fmu)
             self.components.append(component)
 
-            # Update the system_structure instance. Create one if it has not been initialized.
-            if not self.system_structure:
-                self.system_structure = OspSystemStructure()
 
-            # Get source string depending on if the fmu is a network fmu or not
-            source = fmu.source
-            if fmu.is_remote_network_fmu:
-                source = source.replace(
-                    os.path.basename(fmu.fmu_file),
-                    os.path.join(rel_path_to_fmu, os.path.basename(fmu.fmu_file))
-                )
-            if fmu.runs_on_proxy_server:
-                rel_path_to_fmu = "proxyfmu://"
-
-            # Add the component to the system structure
-            self.system_structure.add_simulator(OspSimulator(
-                name=name,
-                source=os.path.basename(source),
-                stepSize=stepSize,
-                fmu_rel_path=rel_path_to_fmu
-            ))
             return component
 
         raise TypeError('The name duplicates with the existing components.')
@@ -1002,7 +1134,6 @@ class SimulationConfiguration:
         causality: Causality = None
     ) -> List[OspVariableEndpoint]:
         """Returns variable endpoints used for variable connections
-
         Args:
             component_name
             causality(Optional): Indicates if the endpoints are input or output.
@@ -1027,74 +1158,29 @@ class SimulationConfiguration:
             return source_endpoint
         return endpoints
 
-    def get_connection_for_variable_endpoint(
+    def get_connections_for_variable_endpoint(
             self,
             component_name: str,
             variable_endpoint: VariableEndpoint
-    ) -> Union[
-        OspVariableConnection,
-        OspVariableGroupConnection,
-        OspSignalConnection,
-        OspSignalGroupConnection
-    ]:
-        """Returns a connection for a variable endpoint"""
-        osp_variable_endpoint = variable_endpoint.get_osp_variable_endpoint(component_name)
-        osp_variable_endpoint_dict_xml = osp_variable_endpoint.to_dict_xml()
-        try:
-            if variable_endpoint.variable_type == VariableType.VARIABLE:
-                return next(filter(
-                    lambda connection: osp_variable_endpoint_dict_xml
-                    in [osp_var.to_dict_xml() for osp_var in connection.Variable],
-                    self.system_structure.Connections.VariableConnection
-                ))
-            if variable_endpoint.variable_type == VariableType.VARIABLE_GROUP:
-                return next(filter(
-                    lambda connection: osp_variable_endpoint_dict_xml
-                    in [osp_var.to_dict_xml() for osp_var in connection.VariableGroup],
-                    self.system_structure.Connections.VariableGroupConnection
-                ))
-        except StopIteration:
-            try:
-                if variable_endpoint.variable_type == VariableType.VARIABLE:
-                    return next(filter(
-                        lambda connection: osp_variable_endpoint_dict_xml ==
-                        connection.Variable.to_dict_xml(),
-                        self.system_structure.Connections.SignalConnection
-                    ))
-                if variable_endpoint.variable_type == VariableType.VARIABLE_GROUP:
-                    return next(filter(
-                        lambda connection: osp_variable_endpoint_dict_xml ==
-                        connection.VariableGroup.to_dict_xml(),
-                        self.system_structure.Connections.SignalGroupConnection
-                    ))
-            except StopIteration as exc:
-                raise TypeError(f'No connection is found for the variable endpoint '
-                                f'({osp_variable_endpoint_dict_xml})') from exc
+    ) -> List[Connection]:
+        """Returns connections for a variable endpoint"""
+        osp_endpoint = variable_endpoint.get_osp_variable_endpoint(component_name=component_name)
+        return list(filter(
+            lambda connection: connection.has_endpoint_for(endpoint=osp_endpoint),
+            self.connections
+        ))
 
-    def get_connection_for_signal_endpoint(
+    def get_connections_for_signal_endpoint(
             self,
             function_name: str,
             signal_endpoint: SignalEndpoint
-    ) -> Union[OspSignalConnection, OspSignalGroupConnection]:
+    ) -> List[Connection]:
         """Returns a connection for a variable endpoint"""
         osp_signal_endpoint = signal_endpoint.get_osp_signal_endpoint(function_name)
-        osp_signal_endpoint_dict_xml = osp_signal_endpoint.to_dict_xml()
-        try:
-            if signal_endpoint.signal_type == SignalType.SIGNAL:
-                return next(filter(
-                    lambda connection: osp_signal_endpoint_dict_xml
-                    == connection.Signal.to_dict_xml(),
-                    self.system_structure.Connections.SignalConnection
-                ))
-            if signal_endpoint.signal_type == SignalType.SIGNAL_GROUP:
-                return next(filter(
-                    lambda connection: osp_signal_endpoint_dict_xml
-                    == connection.SignalGroup.to_dict_xml(),
-                    self.system_structure.Connections.SignalGroupConnection
-                ))
-        except StopIteration as exc:
-            raise TypeError(f'No connection is found for the signal endpoint '
-                            f'({osp_signal_endpoint_dict_xml})') from exc
+        return list(filter(
+            lambda connection: connection.has_endpoint_for(endpoint=osp_signal_endpoint),
+            self.connections
+        ))
 
     def add_variable_endpoint(self, component_name: str, variable_name: str) -> VariableEndpoint:
         """Add a variable endpoint to the system structure"""
@@ -1107,43 +1193,13 @@ class SimulationConfiguration:
         # find the component
         component = self.get_component_by_name(component_name)
         var_endpoint_to_delete = component.get_variable_endpoint(variable_name)
-        osp_var_endpoint_to_delete = var_endpoint_to_delete.get_osp_variable_endpoint(
-            component_name
-        )
-        # Check if the variable endpoint is connected to another variable endpoint. If so, delete
-        # the connection and disconnect the other endpoint.
+        # Check if the variable endpoint is used in the connection
         if var_endpoint_to_delete.connected:
-            connection = self.get_connection_for_variable_endpoint(
+            for connection in self.get_connections_for_variable_endpoint(
                 component_name=component_name,
                 variable_endpoint=var_endpoint_to_delete
-            )
-            if var_endpoint_to_delete.variable_type == VariableType.VARIABLE:
-                if isinstance(connection, OspVariableConnection):
-                    osp_endpoint_connected = next(filter(
-                        lambda var_endpoint: var_endpoint.to_dict_xml()
-                        != osp_var_endpoint_to_delete.to_dict_xml(),
-                        connection.Variable
-                    ))
-                elif isinstance(connection, OspSignalConnection):
-                    osp_endpoint_connected = connection.Signal
-                else:
-                    raise TypeError(f'Unknown connection type: {type(connection)}')
-            elif var_endpoint_to_delete.variable_type == VariableType.VARIABLE_GROUP:
-                if isinstance(connection, OspVariableGroupConnection):
-                    osp_endpoint_connected = next(filter(
-                        lambda var_endpoint: var_endpoint.to_dict_xml()
-                        != osp_var_endpoint_to_delete.to_dict_xml(),
-                        connection.VariableGroup
-                    ))
-                elif isinstance(connection, OspSignalGroupConnection):
-                    osp_endpoint_connected = connection.SignalGroup
-                else:
-                    raise TypeError(f'Unknown connection type: {type(connection)}')
-            else:
-                raise TypeError(f'Unknown variable type: {var_endpoint_to_delete.variable_type}')
-            self.delete_connection(
-                endpoint1=osp_var_endpoint_to_delete, endpoint2=osp_endpoint_connected
-            )
+            ):
+                self.delete_connection(connection)
         return component.delete_variable_endpoint(variable_name)
 
     def delete_signal_endpoint(self, function_name: str, signal_name: str) -> SignalEndpoint:
@@ -1151,25 +1207,14 @@ class SimulationConfiguration:
         # find the component
         function = self.get_function_by_name(function_name)
         sig_endpoint_to_delete = function.get_signal_endpoint(signal_name)
-        osp_var_endpoint_to_delete = sig_endpoint_to_delete.get_osp_signal_endpoint(function_name)
         # check if the signal is connected. If yes, delete the connection and disconnect the other
         # endpoint
         if sig_endpoint_to_delete.connected:
-            connection = self.get_connection_for_signal_endpoint(
+            for connection in self.get_connections_for_signal_endpoint(
                 function_name=function_name,
                 signal_endpoint=sig_endpoint_to_delete
-            )
-            if sig_endpoint_to_delete.signal_type == SignalType.SIGNAL:
-                osp_endpoint_connected = connection.Variable
-            elif sig_endpoint_to_delete.signal_type == SignalType.SIGNAL_GROUP:
-                osp_endpoint_connected = connection.VariableGroup
-            else:
-                raise TypeError(f'Unknown signal type: {sig_endpoint_to_delete.signal_type}')
-            component = self.get_component_by_name(osp_endpoint_connected.simulator)
-            component.get_variable_endpoint(osp_endpoint_connected.name).connected = False
-            self.delete_connection(
-                endpoint1=osp_var_endpoint_to_delete, endpoint2=osp_endpoint_connected
-            )
+            ):
+                self.delete_connection(connection)
         return function.delete_signal_endpoint(signal_name)
 
     def add_signal_endpoint(
@@ -1185,145 +1230,77 @@ class SimulationConfiguration:
         # Delete the signal endpoint in the function
         return function.add_signal_endpoint(
             signal_name=signal_name,
-            signal_type=signal_type,
             causality=causality
         )
 
     def add_connection(
             self,
-            source: Union[OspVariableEndpoint, OspSignalEndpoint],
-            target: Union[OspVariableEndpoint, OspSignalEndpoint],
-            group: bool
-    ) -> Union[
-        OspVariableConnection,
-        OspSignalConnection,
-        OspVariableGroupConnection,
-        OspSignalGroupConnection
-    ]:
+            endpoint1: Union[OspVariableEndpoint, OspSignalEndpoint],
+            endpoint2: Union[OspVariableEndpoint, OspSignalEndpoint],
+    ) -> Connection:
         """Add a connection to the system for variable input/output
 
         type of connection       | source             | target              | group
         variable connection      | OspVariableEndpoint | OspVariableEndpoint | False
         variable group connection| OspVariableEndpoint | OspVariableEndpoint | True
-        singal connection        | OspVariableEndpoint | OspSignalEndpoint   | False
-        signal connection        | OspSingalEndpoint   | OspVariableEndpoint | False
-        singal group connection  | OspVariableEndpoint | OspSignalEndpoint   | True
-        signal group connection  | OspSingalEndpoint   | OspVariableEndpoint | True
+        signal connection        | OspVariableEndpoint | OspSignalEndpoint   | False
+        signal connection        | OspSignalEndpoint   | OspVariableEndpoint | False
+        signal group connection  | OspVariableEndpoint | OspSignalEndpoint   | True
+        signal group connection  | OspSignalEndpoint   | OspVariableEndpoint | True
         """
         # Find the component and add the variable/signal endpoint for the source
-        if isinstance(source, OspVariableEndpoint):
-            source_component_function = self.get_component_by_name(source.simulator)
-            try:
-                source_endpoint = self.add_variable_endpoint(
-                    component_name=source.simulator,
-                    variable_name=source.name
-                )
-            except ValueError:
-                try:
-                    source_endpoint = \
-                        source_component_function.get_variable_endpoint_not_connected(source.name)
-                except ValueError as exc:
-                    raise ValueError(
-                        f'The source variable {source.name} is already connected.'
-                    ) from exc
-        elif isinstance(source, OspSignalEndpoint):
-            source_component_function = self.get_function_by_name(source.function)
-            try:
-                source_endpoint = self.add_signal_endpoint(
-                    function_name=source.function,
-                    signal_type=SignalType.SIGNAL if not group else  SignalType.SIGNAL_GROUP,
-                    signal_name=source.name,
-                    causality=Causality.OUTPUT
-                )
-            except ValueError:
-                try:
-                    source_endpoint = \
-                        source_component_function.get_signal_endpoint_not_connected(source.name)
-                except ValueError as exc:
-                    raise ValueError(
-                        f'The source signal {source.name} is already connected.'
-                    ) from exc
+        if isinstance(endpoint1, OspVariableEndpoint):
+            comp_func1 = self.get_component_by_name(endpoint1.simulator)
+            if isinstance(endpoint2, OspVariableEndpoint):
+                comp_func2 = self.get_component_by_name(endpoint2.simulator)
+            elif isinstance(endpoint2, OspSignalEndpoint):
+                comp_func2 = self.get_function_by_name(endpoint2.function)
+            else:
+                raise TypeError(f"Unknown endpoint type: {type(endpoint2)}")
+        elif isinstance(endpoint1, OspSignalEndpoint):
+            comp_func1 = self.get_function_by_name(endpoint1.function)
+            if isinstance(endpoint2, OspVariableEndpoint):
+                comp_func2 = self.get_component_by_name(endpoint2.simulator)
+            else:
+                raise TypeError(f"Endpoint2 should be a variable endpoint: {type(endpoint2)}")
         else:
-            raise TypeError(
-                'Source endpoint should be either OspVariableEndpoint or OspSignalEndpoint.'
-            )
-        if source_endpoint.causality not in [Causality.OUTPUT, Causality.INDEFINITE]:
-            raise TypeError(
-                'The source endpoint is not an output endpoint. '
-                'The source endpoint should be an output endpoint.'
-            )
-        source_endpoint.connected = True
-        # Find the component and add the variable/signal endpoint for the target
-        if isinstance(target, OspVariableEndpoint):
-            # First try to add the endpoint. If it already exists, it will return the existing one.
-            target_component_function = self.get_component_by_name(target.simulator)
-            try:
-                target_endpoint = self.add_variable_endpoint(
-                    component_name=target.simulator,
-                    variable_name=target.name
-                )
-            except ValueError:
-                try:
-                    target_endpoint = \
-                        target_component_function.get_variable_endpoint_not_connected(target.name)
-                except ValueError as exc:
-                    raise ValueError(
-                        f'The target endpoint {target.name} is already connected.'
-                    ) from exc
-        elif isinstance(target, OspSignalEndpoint):
-            target_component_function = self.get_function_by_name(target.function)
-            try:
-                target_endpoint = self.add_signal_endpoint(
-                    function_name=target.function,
-                    signal_type=SignalType.SIGNAL if not group else  SignalType.SIGNAL_GROUP,
-                    signal_name=target.name,
-                    causality=Causality.INPUT
-                )
-            except ValueError:
-                try:
-                    target_endpoint = \
-                        target_component_function.get_signal_endpoint_not_connected(target.name)
-                except ValueError as exc:
-                    raise ValueError(
-                        f'The target endpoint {target.name} is already connected.'
-                    ) from exc
-        else:
-            raise TypeError(
-                'Target endpoint should be either OspVariableEndpoint or OspSignalEndpoint.'
-            )
-        if target_endpoint.causality not in [Causality.INPUT, Causality.INDEFINITE]:
-            raise TypeError('The target endpoint should have an input causality')
-        target_endpoint.connected = True
-        connection = self.system_structure.add_connection(source=source, target=target, group=group)
+            raise TypeError(f"Unknown endpoint type: {type(endpoint1)}")
+        connection = Connection(
+            end_comp_func1=comp_func1,
+            end_comp_func2=comp_func2,
+            end_var_sig1=endpoint1.name,
+            end_var_sig2=endpoint2.name,
+        )
+        self.connections.append(connection)
         return connection
 
-    def delete_connection(
+    def get_connection(
             self,
             endpoint1: Union[OspVariableEndpoint, OspSignalEndpoint],
             endpoint2: Union[OspVariableEndpoint, OspSignalEndpoint]
-    ):
-        """Deletes a connection having the given endpoints"""
-        # Find the component and change the connection status of the VariableEndpoint
-        if isinstance(endpoint1, OspVariableEndpoint):
-            component_function1 = self.get_component_by_name(endpoint1.simulator)
-            variable_endpoint1 = component_function1.get_variable_endpoint(endpoint1.name)
-            variable_endpoint1.connected = False
-        elif isinstance(endpoint1, OspSignalEndpoint):
-            component_function1 = self.get_function_by_name(endpoint1.function)
-            signal_endpoint1 = component_function1.get_signal_endpoint(endpoint1.name)
-            signal_endpoint1.connected = False
-        if isinstance(endpoint2, OspVariableEndpoint):
-            component_function2 = self.get_component_by_name(endpoint2.simulator)
-            variable_endpoint2 = component_function2.get_variable_endpoint(endpoint2.name)
-            variable_endpoint2.connected = False
-        elif isinstance(endpoint2, OspSignalEndpoint):
-            component_function2 = self.get_function_by_name(endpoint2.function)
-            signal_endpoint2 = component_function2.get_signal_endpoint(endpoint2.name)
-            signal_endpoint2.connected = False
-        return self.system_structure.delete_connection(
-            endpoint1=endpoint1,
-            endpoint2=endpoint2
-        )
+    ) -> Connection:
+        """Get the connection between two endpoints"""
+        try:
+            return next(filter(
+                lambda connection: connection.has_endpoint_for(endpoint=endpoint1)
+                                   and connection.has_endpoint_for(endpoint=endpoint2),
+                self.connections
+            ))
+        except StopIteration:
+            raise ValueError(f"Connection between {endpoint1} and {endpoint2} not found")
+
+    def delete_connection(
+            self,
+            connection: Optional[Connection] = None,
+            endpoint1: Optional[Union[OspVariableEndpoint, OspSignalEndpoint]] = None,
+            endpoint2: Optional[Union[OspVariableEndpoint, OspSignalEndpoint]] = None
+    ) -> None:
+        """Delete a connection between two endpoints"""
+        if connection is None:
+            connection = self.get_connection(endpoint1, endpoint2)
+        connection.source_endpoint.connected = False
+        connection.target_endpoint.connected = False
+        self.connections.remove(connection)
 
     def add_update_initial_value(
             self,
@@ -1376,9 +1353,10 @@ class SimulationConfiguration:
 
         self.initial_values.append(init_value)
         value_osp_type = convert_value_to_osp_type(value=value, type_var=type_var)
-        self.system_structure.add_update_initial_value(
+        system_structure.add_update_initial_value(
             component_name=component_name,
             init_value=OspInitialValue(variable=variable, value=value_osp_type)
+
         )
 
         return init_value
@@ -1448,21 +1426,12 @@ class SimulationConfiguration:
             function = Function(
                 name=function_name, type=function_type, factor=factor, offset=offset
             )
-            self.system_structure.add_function(
-                function_name=function_name,
-                function_type=function_type,
-                factor=factor,
-                offset=offset
-            )
         elif function_type == FunctionType.Sum:
             inputCount = kwargs.get('inputCount', None)
             if inputCount is None:
                 raise TypeError('"inputCount" argument should be provided for a sum function')
             function = Function(
                 name=function_name, type=function_type, inputCount=inputCount
-            )
-            self.system_structure.add_function(
-                function_name=function_name, function_type=function_type, inputCount=inputCount
             )
         elif function_type == FunctionType.VectorSum:
             inputCount = kwargs.get('inputCount', None)
@@ -1473,12 +1442,6 @@ class SimulationConfiguration:
                 raise TypeError('"dimension" argument should be provided for a sum function')
             function = Function(
                 name=function_name, type=function_type, inputCount=inputCount, dimension=dimension
-            )
-            self.system_structure.add_function(
-                function_name=function_name,
-                function_type=function_type,
-                inputCount=inputCount,
-                dimension=dimension
             )
         else:
             raise TypeError(f'Function type ({function_type}) is not supported')

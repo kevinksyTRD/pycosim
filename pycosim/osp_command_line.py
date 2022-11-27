@@ -45,6 +45,10 @@ if platform.startswith("linux") or platform.startswith("darwin"):
     PATH_TO_COSIM = os.path.join(_MODULE_PATH, "..", "osp_cosim", "linux", "bin", "cosim")
 else:
     PATH_TO_COSIM = os.path.join(_MODULE_PATH, "..", "osp_cosim", "win64", "bin", "cosim.exe")
+    PATH_TO_OLD_COSIM = os.path.join(
+        _MODULE_PATH, "..", "osp_cosim", "win64", "bin_old", "osp_cosim.exe"
+    )
+    PATH_TO_FMU_PROXY_JAR = os.path.join(os.path.dirname(PATH_TO_OLD_COSIM), "fmu-proxy.jar")
 
 @dataclass
 class SimulationResult:

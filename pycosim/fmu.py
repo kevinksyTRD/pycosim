@@ -40,7 +40,7 @@ from pyOSPParser.model_description import (
     OspElectromagneticPowerPortType
 )
 
-from .fmu_proxy import NetworkEndpoint
+from .fmu_proxy import NetworkEndpoint, PROXY_HEADER, PROXY_HEADER_OLD
 from .model_description import read_model_description, ModelDescription
 from .osp_command_line import SimulationResult, run_single_fmu
 
@@ -106,11 +106,12 @@ class FMU:
             return not self.network_endpoint.is_local_host
         return False
 
-    @property
-    def source(self) -> str:
+    def get_source_for_deployment(self, for_old_cosim: bool = False) -> str:
         """Return the source of the FMU"""
         if self.runs_on_proxy_server:
-            result = f"proxyfmu://{self.network_endpoint.address}"
+            if for_old_cosim:
+                return f"{self.network_endpoint.network_string}?guid={self.guid}"
+            result = f"{self.network_endpoint.address}"
             file_path = os.path.basename(self.fmu_file)
             if self.is_remote_network_fmu:
                 result += f":{self.network_endpoint.port}"

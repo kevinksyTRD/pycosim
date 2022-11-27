@@ -5,11 +5,30 @@ __all__ = ['NetworkEndpoint', 'DistributedSimulationProxyServer']
 
 # %% ../nbs/04_fmu_proxy_interface.ipynb 3
 import json
+import logging
 from dataclasses import dataclass
+from subprocess import Popen, PIPE, check_output, STDOUT
 from typing import Dict, Union, Optional
 
+from pycosim.osp_command_line import PATH_TO_FMU_PROXY_JAR
 
 # %% ../nbs/04_fmu_proxy_interface.ipynb 4
+# Define logger
+logger = logging.getLogger('__name__')
+logger.setLevel(logging.INFO)
+
+ch = logging.StreamHandler()
+ch.setLevel(logging.INFO)
+
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+ch.setFormatter(formatter)
+
+logger.addHandler(ch)
+
+PROXY_HEADER = "proxyfmu://"
+PROXY_HEADER_OLD = "fmu-proxy://"
+
+
 @dataclass
 class NetworkEndpoint:
     """Namedtuple class for a network endpoint"""
@@ -37,35 +56,79 @@ class NetworkEndpoint:
         return self.address in ["localhost", "127.0.0.1"]
 
 
+def run_proxy_fmu(port: int, fmu_path: str):
+    """Run the proxy fmu"""
+    args = ["java", "-jar", PATH_TO_FMU_PROXY_JAR, "-thrift/tcp", port, fmu_path]
+    Popen(args=args, shell=True, stdout=PIPE, stderr=PIPE)
+
+
+def check_java_version_for_fmu_proxy():
+    """Check if the java version is at least 1.8"""
+    try:
+        java_version = check_output(['java', '-version'], stderr=STDOUT).decode("utf-8")
+    except FileNotFoundError as exc:
+        raise TypeError("Java runtime not found. Please install Java runtime 1.8.0_281.") from exc
+    index_start = java_version.find('"')
+    index_end = java_version.find('"', index_start + 1)
+    java_version1, java_version2 = java_version[index_start + 1:index_end].split("_")
+    if java_version1 != "1.8.0":
+        raise TypeError("Java version must be 1.8.0_281 or lower.")
+    if int(java_version2) > 281:
+        raise TypeError("Java version must be 1.8.0_281 or lower.")
+
+
 class DistributedSimulationProxyServer:
     """Class for handling distributed simulation proxy server"""
 
     def __init__(
             self,
             file_path_fmu: Optional[str] = None,
+            guid: Optional[str] = None,
             endpoint: NetworkEndpoint = NetworkEndpoint(address="localhost", port=9090),
             source_text: Optional[str] = None,
     ):
         """Constructor for the class"""
         if source_text is not None:
-            # source_text should be in the following form: "address:port?file=path/to/fmu"
+            # source_text should be in the following form: "address:port?file=path/to/fmu" for
+            # new cosim (>0.4.0) and "address:port?guid=xxxx" for old cosim (<0.4.0)
             # if address is localhost, port may be missing
             address_port, query = source_text.split("?")
             address, port = address_port.split(":") if ":" in address_port else (address_port, None)
             port = int(port) if port is not None else None
-            file_path_fmu = query.split("=")[1]
             endpoint = NetworkEndpoint(address=address, port=port)
+            if query.includes("file="):
+                file_path_fmu = query.split("=")[1]
+                guid = None
+            elif query.includes("guid="):
+                file_path_fmu = None
+                guid = query.split("=")[1]
+        self.guid = guid
         self.endpoint = endpoint
         self.file_path_fmu = file_path_fmu
 
     @property
-    def _query_string(self):
+    def is_for_new_cosim(self) -> bool:
+        """Returns True if the proxy server is for new cosim (>0.4.0)"""
+        return self.file_path_fmu is not None
+
+    @property
+    def _query_string(self) -> str:
         """Returns the query string for the endpoint"""
-        return f"file={self.file_path_fmu}"
+        if self.is_for_new_cosim:
+            return f"file={self.file_path_fmu}"
+        return f"guid={self.guid}"
 
     @property
     def endpoint_str(self):
         """Returns the end point for a system structure file"""
-        return f"proxyfmu://{self.endpoint.network_string}?{self._query_string}"
+        if self.is_for_new_cosim:
+            return f"proxy://{self.endpoint.network_string}?{self._query_string}"
+        return f"fmu-proxy://{self.endpoint.network_string}?{self._query_string}"
 
-
+    def run_local_fmu_proxy(self, fmu_path: str):
+        """Runs the local fmu proxy"""
+        if self.is_for_new_cosim:
+            logging.warning("Running local fmu proxy is not necessary for new cosim")
+        else:
+            check_java_version_for_fmu_proxy()
+            run_proxy_fmu(port=self.endpoint.port, fmu_path=fmu_path)
