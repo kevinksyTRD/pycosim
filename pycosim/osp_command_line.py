@@ -3,7 +3,8 @@
 # %% auto 0
 __all__ = ['logger', 'ch', 'formatter', 'SimulationResult', 'SimulationError', 'ModelVariables', 'FMUModelDescription',
            'LoggingLevel', 'run_cli', 'run_single_fmu', 'deploy_output_config', 'deploy_scenario', 'clean_header',
-           'run_cosimulation', 'deploy_files_for_cosimulation']
+           'get_commandline_for_cosimulation', 'get_simulation_output_from_files', 'deploy_batch_file_for_old_cosim',
+           'run_cosimulation_for_old_cosim', 'run_cosimulation', 'deploy_files_for_cosimulation']
 
 # %% ../nbs/00_OSP_command_line_interface.ipynb 4
 import datetime as dt
@@ -11,17 +12,19 @@ import io
 import logging
 import os
 import shutil
+import time
 from dataclasses import dataclass
 from enum import Enum
-from subprocess import Popen, PIPE
+from subprocess import Popen, PIPE, run
 from sys import platform
 from typing import NamedTuple, List, Dict, Union, Tuple, Any, cast
-import time
 
 import pandas
-from pyOSPParser.scenario import OSPScenario, format_filename
 from pyOSPParser.logging_configuration import OspLoggingConfiguration
+from pyOSPParser.scenario import OSPScenario, format_filename
 from pyOSPParser.system_configuration import OspSystemStructure
+
+from .fmu_proxy import DistributedSimulationProxyServer
 
 # %% ../nbs/00_OSP_command_line_interface.ipynb 5
 # Define logger
@@ -46,9 +49,9 @@ if platform.startswith("linux") or platform.startswith("darwin"):
 else:
     PATH_TO_COSIM = os.path.join(_MODULE_PATH, "..", "osp_cosim", "win64", "bin", "cosim.exe")
     PATH_TO_OLD_COSIM = os.path.join(
-        _MODULE_PATH, "..", "osp_cosim", "win64", "bin_old", "osp_cosim.exe"
+        _MODULE_PATH, "..", "osp_cosim", "win64", "bin_old", "cosim.exe"
     )
-    PATH_TO_FMU_PROXY_JAR = os.path.join(os.path.dirname(PATH_TO_OLD_COSIM), "fmu-proxy.jar")
+
 
 @dataclass
 class SimulationResult:
@@ -126,6 +129,7 @@ def run_cli(args, log_output: bool = False) -> Tuple[str, str]:
     """Run the command line """
     output = b""
     log = b""
+    logger.info(f"Running command: {' '.join(args)}")
     try:
         with Popen(args=args, shell=True, stdout=PIPE, stderr=PIPE) as proc:
             if log_output:
@@ -231,68 +235,33 @@ def clean_header(header: str):
     return header
 
 
-def run_cosimulation(
+def get_commandline_for_cosimulation(
         path_to_system_structure: str,
         output_file_path: str = None,
         scenario_name: str = None,
+        for_old_cosim: bool = False,
         duration: float = None,
         logging_level: LoggingLevel = LoggingLevel.warning,
-        logging_stream: bool = False,
-        time_out_s: int = 60,
-) -> SimulationResult:
-    """Runs a co-simulation. Should have run the deploy function first.
-
-    Args:
-        path_to_system_structure(str): The path to the system structure definition file/directory.
-              If this is a file with .xml extension, or a directory that contains a file named
-              OspSystemStructure.xml, it will be interpreted as a OSP system structure
-              definition.
-        output_file_path(str, optional): file path for the output
-        scenario_name(str, optional), name for the scenario
-        duration(float, optional): duration of simulation in seconds
-        logging_level(LoggingLevel, optional): Sets the detail/severity level of diagnostic output.
-            Valid arguments are 'error', 'warning', 'info', and 'debug'. Default is 'warning'.
-        logging_stream(bool, optional): logging will be returned as a string if True value is given.
-            Otherwise, logging will be only displayed.
-        time_out_s(int, optional): time out in seconds
-    Return:
-        SimulationResult: object containing:
-            result: simulation result
-            log: simulation logging
-            error: error from simulation
-    """
-    # Set loggers
-    logger_local = logging.getLogger()
-    if logging_stream:
-        log_stream = io.StringIO()
-        log_handler = logging.StreamHandler(log_stream)
-        log_handler.setLevel(logging.INFO)
-        logger_local.addHandler(log_handler)
-    logger_local.setLevel(logging_level.value)
-
-    # Set simulation parameters
-    delete_output = False
+):
+    """Get the command line for cosimulation"""
     mode = "run"
 
     # Check if the cosim-cli exists and the system structure exists
-    assert os.path.isfile(PATH_TO_COSIM), f'The cosim CLI is not found: {PATH_TO_COSIM}'
+    if for_old_cosim:
+        assert os.path.isfile(PATH_TO_OLD_COSIM), f'The cosim CLI is not found: {PATH_TO_OLD_COSIM}'
+        path_to_cosim = PATH_TO_OLD_COSIM
+    else:
+        assert os.path.isfile(PATH_TO_COSIM), f'The cosim CLI is not found: {PATH_TO_COSIM}'
+        path_to_cosim = PATH_TO_COSIM
     assert os.path.isdir(path_to_system_structure), \
         f"The system structure directory is not found: {path_to_system_structure}"
     path_to_osp_sys_structure = os.path.join(path_to_system_structure, 'OspSystemStructure.xml')
     assert os.path.isfile(path_to_osp_sys_structure), \
         f'The system structure directory is not found: {path_to_system_structure}'
-    args = [PATH_TO_COSIM, mode, path_to_system_structure]
+    args = [path_to_cosim, mode, path_to_system_structure]
 
-    if output_file_path is None:
-        output_file_path = path_to_system_structure
-        delete_output = True
-    else:
-        assert os.path.isdir(output_file_path), \
-            f"The directory for the output does not exist: {output_file_path}."
-        logger_local.info(
-            'Output csv files will be saved in the following directory: %s', output_file_path
-        )
-    args.append(f'--output-dir={output_file_path}')
+    if output_file_path:
+        args.append(f'--output-dir={output_file_path}')
 
     if scenario_name is not None:
         scenario_file_path = os.path.join(
@@ -304,37 +273,30 @@ def run_cosimulation(
             raise FileNotFoundError(f'The scenario file is not found: {scenario_file_path}')
         args.append(f'--scenario={scenario_file_path}')
 
-    if duration:
-        logger_local.info('Simulation will run until %f seconds.', duration)
+    if duration is not None:
+        logger.info('Simulation will run until %f seconds.', duration)
         args.append(f'--duration={duration}')
     args.append(f'--log-level={logging_level.name}')
 
-    # Run simulation
-    logger_local.info('Running simulation.')
-    simulation_start_time = time.time()
-    _, log = run_cli(args)
-    logger_local.info(log)
-    error = [  # Find a error in the lines of logging and gather with a line break in between
-        line_with_break for line in log.split('\n') if line.startswith('error')
-        for line_with_break in [line, '\n']
-    ]
-    if len(error) > 1:
-        error = error[:-1]
-    error = ''.join(error)
+    return args
 
-    # construct result from csvs that are created within last 30 seconds
+
+def get_simulation_output_from_files(
+        output_file_path: str,
+        time_out_s: float = 60,
+        delete_output: bool = False,
+) -> Dict[str, pandas.DataFrame]:
+    """Get the simulation output from the output files"""
+    # Collect the output files and wait until all the output files are generated
     output_files = []
+    simulation_start_time = time.time()
     while len(output_files) == 0 and time.time() - simulation_start_time < time_out_s:
         output_files = [
             file_name for file_name in os.listdir(output_file_path) if file_name.endswith('csv')
         ]
         time.sleep(0.5)
-    if len(output_files) == 0:
-        error += f'No output files were created within the time out {time_out_s} seconds.\n'
-    else:
-        logger_local.info(
-            "Simulation completed in %f seconds.", time.time() - simulation_start_time
-        )
+
+    # Collect only recent output files
     ago = dt.datetime.now() - dt.timedelta(seconds=30)
     output_files = [
         file_name for file_name in output_files
@@ -342,6 +304,8 @@ def run_cosimulation(
             os.stat(os.path.join(output_file_path, file_name)).st_mtime
         ) > ago
     ]
+
+    # Read the output files and return the result
     result = {}
     for file in output_files:
         simulator_name = file
@@ -360,9 +324,98 @@ def run_cosimulation(
         result[simulator_name].drop(["StepCount"], axis=1, inplace=True)
         new_column_name = list(map(clean_header, result[simulator_name].columns))
         result[simulator_name].columns = new_column_name
+
     if delete_output:
         for file_name in output_files:
             os.remove(os.path.join(output_file_path, file_name))
+
+    return result
+
+
+def deploy_batch_file_for_old_cosim(
+        path_to_system_structure: str,
+        output_file_path: str,
+        scenario_name: str = None,
+        duration: float = None,
+        logging_level: LoggingLevel = LoggingLevel.warning,
+        proxy_servers: List[DistributedSimulationProxyServer] = None,
+) -> str:
+    """Deploy the batch file for the old cosim. Returns the path to the batch file."""
+    batch_file_path = os.path.join(os.path.dirname(path_to_system_structure), 'run_cosim.bat')
+    command_line = "@echo off\n"
+    if proxy_servers is not None:
+        for proxy_server in proxy_servers:
+            command_line_for_proxy_server = " ".join(proxy_server.get_local_fmu_proxy_command())
+            command_line += f"start cmd /C {command_line_for_proxy_server}\n"
+    cosim_args = get_commandline_for_cosimulation(
+        path_to_system_structure=path_to_system_structure,
+        output_file_path=output_file_path,
+        scenario_name=scenario_name,
+        duration=duration,
+        logging_level=logging_level,
+        for_old_cosim=True,
+    )
+    command_line += " ".join(cosim_args)
+    with open(batch_file_path, 'wt') as batch_file:
+        batch_file.write(command_line)
+    return batch_file_path
+
+def run_cosimulation_for_old_cosim(
+        path_to_system_structure: str,
+        output_file_path: str = None,
+        scenario_name: str = None,
+        duration: float = None,
+        logging_level: LoggingLevel = LoggingLevel.warning,
+        proxy_servers: List[DistributedSimulationProxyServer] = None,
+        logging_stream: bool = True,
+        time_out_s: int = 60,
+):
+    logger_local = logging.getLogger()
+    if logging_stream:
+        log_stream = io.StringIO()
+        log_handler = logging.StreamHandler(log_stream)
+        log_handler.setLevel(logging.INFO)
+        logger_local.addHandler(log_handler)
+    logger_local.setLevel(logging_level.value)
+
+    delete_output = False
+    if output_file_path is None:
+        output_file_path = path_to_system_structure
+        delete_output = True
+    else:
+        assert os.path.isdir(output_file_path), \
+            f"The directory for the output does not exist: {output_file_path}."
+    logger_local.info(
+        'Output csv files will be saved in the following directory: %s', output_file_path
+    )
+    logger_local.info("Deploying the batch file for the old cosim...")
+    batch_file_path = deploy_batch_file_for_old_cosim(
+        path_to_system_structure=path_to_system_structure,
+        output_file_path=output_file_path,
+        scenario_name=scenario_name,
+        duration=duration,
+        logging_level=logging_level,
+        proxy_servers=proxy_servers,
+    )
+    # Run the batch file
+    logger_local.info("Running the batch file for the old cosim...")
+    simulation_start_time = time.time()
+    process = run(args=[batch_file_path], shell=True, check=False, capture_output=True)
+    result_timeseries = get_simulation_output_from_files(
+        output_file_path=output_file_path, time_out_s=10, delete_output=delete_output
+    )
+    if len(result_timeseries) > 0:
+        logger_local.info(
+            "Simulation completed in %f seconds.", time.time() - simulation_start_time
+        )
+    # for c in process_obj.children(recursive=True):
+    #     c.kill()
+    # stdout, stderr = proc.communicate()
+    # proc.kill()
+    if process.stdout is not None:
+        logger_local.info(process.stdout.decode("utf-8"))
+    if process.stderr is not None:
+        logger_local.error(process.stderr.decode("utf-8"))
 
     # Get logging data
     if logging_stream:
@@ -375,7 +428,129 @@ def run_cosimulation(
     else:
         log = ''
 
-    return SimulationResult(result=result, log=log, error=error)
+    return SimulationResult(result=result_timeseries, log=log, error="")
+
+
+def run_cosimulation(
+        path_to_system_structure: str,
+        output_file_path: str = None,
+        scenario_name: str = None,
+        duration: float = None,
+        logging_level: LoggingLevel = LoggingLevel.warning,
+        logging_stream: bool = False,
+        time_out_s: int = 60,
+        for_old_cosim: bool = False,
+        local_proxy_servers: List[DistributedSimulationProxyServer] = None,
+) -> SimulationResult:
+    """Runs a co-simulation. Should have run the deploy function first.
+
+    Args:
+        path_to_system_structure(str): The path to the system structure definition file/directory.
+              If this is a file with .xml extension, or a directory that contains a file named
+              OspSystemStructure.xml, it will be interpreted as a OSP system structure
+              definition.
+        output_file_path(str, optional): file path for the output
+        scenario_name(str, optional), name for the scenario
+        duration(float, optional): duration of simulation in seconds
+        logging_level(LoggingLevel, optional): Sets the detail/severity level of diagnostic output.
+            Valid arguments are 'error', 'warning', 'info', and 'debug'. Default is 'warning'.
+        logging_stream(bool, optional): logging will be returned as a string if True value is given.
+            Otherwise, logging will be only displayed.
+        time_out_s(int, optional): time out in seconds
+        for_old_cosim(bool, optional): if True, the old cosim will be used
+        local_proxy_servers(List[DistributedSimulationProxyServer], optional):
+            list of local proxy servers. Only required for local proxy servers and for old cosim.
+    Return:
+        SimulationResult: object containing:
+            result: simulation result
+            log: simulation logging
+            error: error from simulation
+    """
+    # Set loggers
+    logger_local = logging.getLogger()
+    if logging_stream:
+        log_stream = io.StringIO()
+        log_handler = logging.StreamHandler(log_stream)
+        log_handler.setLevel(logging.INFO)
+        logger_local.addHandler(log_handler)
+    logger_local.setLevel(logging_level.value)
+
+    delete_output = False
+    if output_file_path is None:
+        output_file_path = path_to_system_structure
+        delete_output = True
+    else:
+        assert os.path.isdir(output_file_path), \
+            f"The directory for the output does not exist: {output_file_path}."
+    logger.info(
+        'Output csv files will be saved in the following directory: %s', output_file_path
+    )
+
+    # Run simulation
+    logger_local.info('Running simulation.')
+    proxy_processes = []
+    if for_old_cosim:
+        proxy_processes = [
+            local_proxy_server.run_local_fmu_proxy() for local_proxy_server in local_proxy_servers
+        ]
+    time.sleep(3)
+    for proxy_process in proxy_processes:
+        if proxy_process.poll() is not None:
+            stdout = proxy_process.stdout.read().decode('utf-8')
+            stderr = proxy_process.stderr.read().decode('utf-8')
+            raise SimulationError(f'The proxy process is not running: {proxy_process.args} \n '
+                                  f'output: {stdout}\n'
+                                  f'error: {stderr}')
+
+    args = get_commandline_for_cosimulation(
+        path_to_system_structure=path_to_system_structure,
+        output_file_path=output_file_path,
+        scenario_name=scenario_name,
+        duration=duration,
+        logging_level=logging_level,
+        for_old_cosim=for_old_cosim,
+    )
+    simulation_start_time = time.time()
+    _, log = run_cli(args=args, log_output=False)
+
+    # Collect the logging
+    logger.info(log)
+    error = [# Find a error in the lines of logging and gather with a line break in between
+        line_with_break for line in log.split('\n') if line.startswith('error')
+        for line_with_break in [line, '\n']
+    ]
+    if len(error) > 1:
+        error = error[:-1]
+    error = ''.join(error)
+
+    result_timeseries = get_simulation_output_from_files(
+        output_file_path=output_file_path, time_out_s=time_out_s, delete_output=delete_output
+    )
+
+    for process in proxy_processes:
+        while process.poll() is None:
+            process.terminate()
+            time.sleep(1)
+
+    if len(result_timeseries) == 0:
+        error += f'No output files were created within the time out {time_out_s} seconds.\n'
+    else:
+        logger.info(
+            "Simulation completed in %f seconds.", time.time() - simulation_start_time
+        )
+
+    # Get logging data
+    if logging_stream:
+        # noinspection PyUnboundLocalVariable
+        logger_local.removeHandler(log_handler)
+        log_handler.flush()
+        # noinspection PyUnboundLocalVariable
+        log_stream.flush()
+        log = log_stream.getvalue()
+    else:
+        log = ''
+
+    return SimulationResult(result=result_timeseries, log=log, error=error)
 
 
 def deploy_files_for_cosimulation(

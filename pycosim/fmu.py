@@ -40,7 +40,7 @@ from pyOSPParser.model_description import (
     OspElectromagneticPowerPortType
 )
 
-from .fmu_proxy import NetworkEndpoint, PROXY_HEADER, PROXY_HEADER_OLD
+from .fmu_proxy import NetworkEndpoint
 from .model_description import read_model_description, ModelDescription
 from .osp_command_line import SimulationResult, run_single_fmu
 
