@@ -1,0 +1,8 @@
+<simulators>
+    <simulator name="chassis" decimationFactor="10">
+        <variable name="zChassis"/>
+    </simulator>
+    <simulator name="wheel">
+        <variable name="zWheel"/>
+    </simulator>
+</simulators>
