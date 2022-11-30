@@ -28,13 +28,13 @@ from .fmu_proxy import DistributedSimulationProxyServer
 
 # %% ../nbs/00_OSP_command_line_interface.ipynb 5
 # Define logger
-logger = logging.getLogger('__name__')
+logger = logging.getLogger("__name__")
 logger.setLevel(logging.INFO)
 
 ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
 
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 ch.setFormatter(formatter)
 
 logger.addHandler(ch)
@@ -45,9 +45,13 @@ except NameError:
     _MODULE_PATH = os.path.dirname(os.path.abspath(""))
 
 if platform.startswith("linux") or platform.startswith("darwin"):
-    PATH_TO_COSIM = os.path.join(_MODULE_PATH, "..", "osp_cosim", "linux", "bin", "cosim")
+    PATH_TO_COSIM = os.path.join(
+        _MODULE_PATH, "..", "osp_cosim", "linux", "bin", "cosim"
+    )
 else:
-    PATH_TO_COSIM = os.path.join(_MODULE_PATH, "..", "osp_cosim", "win64", "bin", "cosim.exe")
+    PATH_TO_COSIM = os.path.join(
+        _MODULE_PATH, "..", "osp_cosim", "win64", "bin", "cosim.exe"
+    )
     PATH_TO_OLD_COSIM = os.path.join(
         _MODULE_PATH, "..", "osp_cosim", "win64", "bin_old", "cosim.exe"
     )
@@ -56,6 +60,7 @@ else:
 @dataclass
 class SimulationResult:
     """Simulation result"""
+
     result: Dict[str, pandas.DataFrame]
     log: str
     error: str = None
@@ -66,7 +71,7 @@ class SimulationError(Exception):
 
 
 class ModelVariables(NamedTuple):
-    """ Representation of model variables from FMU's model description
+    """Representation of model variables from FMU's model description
 
     Attributes:
         parameters (List[Dict[str,str]], optional)
@@ -74,30 +79,31 @@ class ModelVariables(NamedTuple):
         outputs (List[Dict[str,str]], optional)
         others (List[Dict[str,str]], optional)
     """
+
     parameters: List[Dict[str, str]] = []
     inputs: List[Dict[str, str]] = []
     outputs: List[Dict[str, str]] = []
     others: List[Dict[str, str]] = []
 
     def get_parameters_names(self) -> List:
-        """ Returns a list of the parameter names """
-        return [variable['name'] for variable in self.parameters]
+        """Returns a list of the parameter names"""
+        return [variable["name"] for variable in self.parameters]
 
     def get_input_names(self) -> List:
-        """ Returns a list of the parameter names """
-        return [variable['name'] for variable in self.inputs]
+        """Returns a list of the parameter names"""
+        return [variable["name"] for variable in self.inputs]
 
     def get_output_names(self) -> List:
-        """ Returns a list of the output names """
-        return [variable['name'] for variable in self.outputs]
+        """Returns a list of the output names"""
+        return [variable["name"] for variable in self.outputs]
 
     def get_other_variable_names(self) -> List:
-        """ Returns a list of the parameter names """
-        return [variable['name'] for variable in self.others]
+        """Returns a list of the parameter names"""
+        return [variable["name"] for variable in self.others]
 
 
 class FMUModelDescription(NamedTuple):
-    """ Model description summary
+    """Model description summary
 
     Model description summary used as a return type for get_model_description
 
@@ -109,16 +115,18 @@ class FMUModelDescription(NamedTuple):
         author (str, optional)
         version (str, optional)
     """
+
     name: str
     uuid: str
     model_variable: ModelVariables
-    description: str = ''
-    author: str = ''
-    version: str = ''
+    description: str = ""
+    author: str = ""
+    version: str = ""
 
 
 class LoggingLevel(Enum):
     """Enum for logging level"""
+
     error = 40
     warning = 30
     info = 20
@@ -126,7 +134,7 @@ class LoggingLevel(Enum):
 
 
 def run_cli(args, log_output: bool = False) -> Tuple[str, str]:
-    """Run the command line """
+    """Run the command line"""
     output = b""
     log = b""
     logger.info(f"Running command: {' '.join(args)}")
@@ -136,19 +144,19 @@ def run_cli(args, log_output: bool = False) -> Tuple[str, str]:
                 output = proc.stdout.read()
                 log = proc.stderr.read()
     except OSError as exception:
-        raise OSError(f'{output}, {log}, {exception}')
+        raise OSError(f"{output}, {log}, {exception}")
 
     # Catch errors
 
-    return output.decode('utf-8'), log.decode('utf-8')
+    return output.decode("utf-8"), log.decode("utf-8")
 
 
 def run_single_fmu(
-        path_to_fmu: str,
-        initial_values: Dict[str, Union[float, bool]] = None,
-        output_file_path: str = None,
-        duration: float = None,
-        step_size: float = None,
+    path_to_fmu: str,
+    initial_values: Dict[str, Union[float, bool]] = None,
+    output_file_path: str = None,
+    duration: float = None,
+    step_size: float = None,
 ) -> SimulationResult:
     """Runs a single fmu simulation
 
@@ -169,7 +177,7 @@ def run_single_fmu(
         initial_values = {}
     if output_file_path is None:
         # Delete output if the output file path is not given
-        output_file_path = 'model-output.csv'
+        output_file_path = "model-output.csv"
         delete_output = True
     mode = "run-single"
 
@@ -178,51 +186,48 @@ def run_single_fmu(
 
     # Create a list of initial values and set arguments for simulation
     args = [PATH_TO_COSIM, mode, path_to_fmu]
-    args.extend(f'{key}={value}' for key, value in initial_values.items())
-    args.append(f'--output-file={output_file_path}')
+    args.extend(f"{key}={value}" for key, value in initial_values.items())
+    args.append(f"--output-file={output_file_path}")
     if duration:
-        args.append(f'-d{duration}')
+        args.append(f"-d{duration}")
     if step_size:
-        args.append(f'-s{step_size}')
+        args.append(f"-s{step_size}")
 
     #: Run the cosim to get the result in yaml format
     log, _ = run_cli(args)
 
     # Parse the output
     result_df = pandas.read_csv(output_file_path, index_col=False)
-    result_df.index = result_df['Time'].values
-    result_df.index.name = 'Time'
-    result_df = result_df.drop(columns=['Time'])
+    result_df.index = result_df["Time"].values
+    result_df.index.name = "Time"
+    result_df = result_df.drop(columns=["Time"])
     new_column_name = list(map(clean_header, result_df.columns))
     result_df.columns = new_column_name
     result = {fmu_name: result_df}
     if delete_output:
         os.remove(output_file_path)
 
-    return SimulationResult(
-        result=result,
-        log=log
-    )
+    return SimulationResult(result=result, log=log)
 
 
 def deploy_output_config(output_config: OspLoggingConfiguration, path: str):
     """Deploys a logging configiguration."""
-    file_path = os.path.join(path, 'LogConfig.xml')
+    file_path = os.path.join(path, "LogConfig.xml")
 
     xml_text = output_config.to_xml_str()
 
-    with open(file_path, 'w+') as file:
+    with open(file_path, "w+") as file:
         file.write(xml_text)
 
 
 def deploy_scenario(scenario: OSPScenario, path: str):
     """Deploys a scenario"""
-    dir_path = os.path.join(path, 'scenarios')
+    dir_path = os.path.join(path, "scenarios")
     if not os.path.isdir(dir_path):
         os.makedirs(dir_path)
     file_path = os.path.join(dir_path, scenario.get_file_name())
 
-    with open(file_path, 'w+') as file:
+    with open(file_path, "w+") as file:
         file.write(scenario.to_json())
 
     return file_path
@@ -230,61 +235,73 @@ def deploy_scenario(scenario: OSPScenario, path: str):
 
 def clean_header(header: str):
     """Clean header for simulation outputs"""
-    if '[' in header:
-        return header[0:header.rindex('[')-1]
+    if "[" in header:
+        return header[0 : header.rindex("[") - 1]
     return header
 
 
 def get_commandline_for_cosimulation(
-        path_to_system_structure: str,
-        output_file_path: str = None,
-        scenario_name: str = None,
-        for_old_cosim: bool = False,
-        duration: float = None,
-        logging_level: LoggingLevel = LoggingLevel.warning,
+    path_to_system_structure: str,
+    path_to_bin: str = None,
+    output_file_path: str = None,
+    scenario_name: str = None,
+    for_old_cosim: bool = False,
+    duration: float = None,
+    logging_level: LoggingLevel = LoggingLevel.warning,
 ):
     """Get the command line for cosimulation"""
     mode = "run"
 
     # Check if the cosim-cli exists and the system structure exists
-    if for_old_cosim:
-        assert os.path.isfile(PATH_TO_OLD_COSIM), f'The cosim CLI is not found: {PATH_TO_OLD_COSIM}'
-        path_to_cosim = PATH_TO_OLD_COSIM
-    else:
-        assert os.path.isfile(PATH_TO_COSIM), f'The cosim CLI is not found: {PATH_TO_COSIM}'
-        path_to_cosim = PATH_TO_COSIM
-    assert os.path.isdir(path_to_system_structure), \
-        f"The system structure directory is not found: {path_to_system_structure}"
-    path_to_osp_sys_structure = os.path.join(path_to_system_structure, 'OspSystemStructure.xml')
-    assert os.path.isfile(path_to_osp_sys_structure), \
-        f'The system structure directory is not found: {path_to_system_structure}'
-    args = [path_to_cosim, mode, path_to_system_structure]
+    if path_to_bin is None:
+        if for_old_cosim:
+            assert os.path.isfile(
+                PATH_TO_OLD_COSIM
+            ), f"The cosim CLI is not found: {PATH_TO_OLD_COSIM}"
+            path_to_bin = PATH_TO_OLD_COSIM
+        else:
+            assert os.path.isfile(
+                PATH_TO_COSIM
+            ), f"The cosim CLI is not found: {PATH_TO_COSIM}"
+            path_to_bin = PATH_TO_COSIM
+        assert os.path.isdir(
+            path_to_system_structure
+        ), f"The system structure directory is not found: {path_to_system_structure}"
+    path_to_osp_sys_structure = os.path.join(
+        path_to_system_structure, "OspSystemStructure.xml"
+    )
+    assert os.path.isfile(
+        path_to_osp_sys_structure
+    ), f"The system structure directory is not found: {path_to_system_structure}"
+    args = [path_to_bin, mode, path_to_system_structure]
 
     if output_file_path:
-        args.append(f'--output-dir={output_file_path}')
+        args.append(f"--output-dir={output_file_path}")
 
     if scenario_name is not None:
         scenario_file_path = os.path.join(
             path_to_system_structure,
             "scenarios",
-            f'{format_filename(scenario_name)}.json'
+            f"{format_filename(scenario_name)}.json",
         )
         if not os.path.isfile(scenario_file_path):
-            raise FileNotFoundError(f'The scenario file is not found: {scenario_file_path}')
-        args.append(f'--scenario={scenario_file_path}')
+            raise FileNotFoundError(
+                f"The scenario file is not found: {scenario_file_path}"
+            )
+        args.append(f"--scenario={scenario_file_path}")
 
     if duration is not None:
-        logger.info('Simulation will run until %f seconds.', duration)
-        args.append(f'--duration={duration}')
-    args.append(f'--log-level={logging_level.name}')
+        logger.info("Simulation will run until %f seconds.", duration)
+        args.append(f"--duration={duration}")
+    args.append(f"--log-level={logging_level.name}")
 
     return args
 
 
 def get_simulation_output_from_files(
-        output_file_path: str,
-        time_out_s: float = 60,
-        delete_output: bool = False,
+    output_file_path: str,
+    time_out_s: float = 60,
+    delete_output: bool = False,
 ) -> Dict[str, pandas.DataFrame]:
     """Get the simulation output from the output files"""
     # Collect the output files and wait until all the output files are generated
@@ -292,17 +309,21 @@ def get_simulation_output_from_files(
     simulation_start_time = time.time()
     while len(output_files) == 0 and time.time() - simulation_start_time < time_out_s:
         output_files = [
-            file_name for file_name in os.listdir(output_file_path) if file_name.endswith('csv')
+            file_name
+            for file_name in os.listdir(output_file_path)
+            if file_name.endswith("csv")
         ]
         time.sleep(0.5)
 
     # Collect only recent output files
     ago = dt.datetime.now() - dt.timedelta(seconds=30)
     output_files = [
-        file_name for file_name in output_files
+        file_name
+        for file_name in output_files
         if dt.datetime.fromtimestamp(
             os.stat(os.path.join(output_file_path, file_name)).st_mtime
-        ) > ago
+        )
+        > ago
     ]
 
     # Read the output files and return the result
@@ -310,7 +331,7 @@ def get_simulation_output_from_files(
     for file in output_files:
         simulator_name = file
         for _ in range(3):
-            simulator_name = simulator_name[:simulator_name.rfind('_')]
+            simulator_name = simulator_name[: simulator_name.rfind("_")]
         # Read the csv file for each simulator. The first column is usually the time.
         # There was a case that it caused a KeyError when passing "Time" as a key to the
         # index_col argument. Therefore, we set False to the index_col argument and
@@ -333,19 +354,23 @@ def get_simulation_output_from_files(
 
 
 def deploy_batch_file_for_old_cosim(
-        path_to_system_structure: str,
-        output_file_path: str,
-        scenario_name: str = None,
-        duration: float = None,
-        logging_level: LoggingLevel = LoggingLevel.warning,
-        proxy_servers: List[DistributedSimulationProxyServer] = None,
+    path_to_system_structure: str,
+    output_file_path: str,
+    scenario_name: str = None,
+    duration: float = None,
+    logging_level: LoggingLevel = LoggingLevel.warning,
+    proxy_servers: List[DistributedSimulationProxyServer] = None,
 ) -> str:
     """Deploy the batch file for the old cosim. Returns the path to the batch file."""
-    batch_file_path = os.path.join(os.path.dirname(path_to_system_structure), 'run_cosim.bat')
+    batch_file_path = os.path.join(
+        os.path.dirname(path_to_system_structure), "run_cosim.bat"
+    )
     command_line = "@echo off\n"
     if proxy_servers is not None:
         for proxy_server in proxy_servers:
-            command_line_for_proxy_server = " ".join(proxy_server.get_local_fmu_proxy_command())
+            command_line_for_proxy_server = " ".join(
+                proxy_server.get_local_fmu_proxy_command()
+            )
             command_line += f"start cmd /C {command_line_for_proxy_server}\n"
     cosim_args = get_commandline_for_cosimulation(
         path_to_system_structure=path_to_system_structure,
@@ -356,19 +381,20 @@ def deploy_batch_file_for_old_cosim(
         for_old_cosim=True,
     )
     command_line += " ".join(cosim_args)
-    with open(batch_file_path, 'wt') as batch_file:
+    with open(batch_file_path, "wt") as batch_file:
         batch_file.write(command_line)
     return batch_file_path
 
+
 def run_cosimulation_for_old_cosim(
-        path_to_system_structure: str,
-        output_file_path: str = None,
-        scenario_name: str = None,
-        duration: float = None,
-        logging_level: LoggingLevel = LoggingLevel.warning,
-        proxy_servers: List[DistributedSimulationProxyServer] = None,
-        logging_stream: bool = True,
-        time_out_s: int = 60,
+    path_to_system_structure: str,
+    output_file_path: str = None,
+    scenario_name: str = None,
+    duration: float = None,
+    logging_level: LoggingLevel = LoggingLevel.warning,
+    proxy_servers: List[DistributedSimulationProxyServer] = None,
+    logging_stream: bool = True,
+    time_out_s: int = 60,
 ):
     logger_local = logging.getLogger()
     if logging_stream:
@@ -383,10 +409,12 @@ def run_cosimulation_for_old_cosim(
         output_file_path = path_to_system_structure
         delete_output = True
     else:
-        assert os.path.isdir(output_file_path), \
-            f"The directory for the output does not exist: {output_file_path}."
+        assert os.path.isdir(
+            output_file_path
+        ), f"The directory for the output does not exist: {output_file_path}."
     logger_local.info(
-        'Output csv files will be saved in the following directory: %s', output_file_path
+        "Output csv files will be saved in the following directory: %s",
+        output_file_path,
     )
     logger_local.info("Deploying the batch file for the old cosim...")
     batch_file_path = deploy_batch_file_for_old_cosim(
@@ -426,21 +454,21 @@ def run_cosimulation_for_old_cosim(
         log_stream.flush()
         log = log_stream.getvalue()
     else:
-        log = ''
+        log = ""
 
     return SimulationResult(result=result_timeseries, log=log, error="")
 
 
 def run_cosimulation(
-        path_to_system_structure: str,
-        output_file_path: str = None,
-        scenario_name: str = None,
-        duration: float = None,
-        logging_level: LoggingLevel = LoggingLevel.warning,
-        logging_stream: bool = False,
-        time_out_s: int = 60,
-        for_old_cosim: bool = False,
-        local_proxy_servers: List[DistributedSimulationProxyServer] = None,
+    path_to_system_structure: str,
+    output_file_path: str = None,
+    scenario_name: str = None,
+    duration: float = None,
+    logging_level: LoggingLevel = LoggingLevel.warning,
+    logging_stream: bool = False,
+    time_out_s: int = 60,
+    for_old_cosim: bool = False,
+    local_proxy_servers: List[DistributedSimulationProxyServer] = None,
 ) -> SimulationResult:
     """Runs a co-simulation. Should have run the deploy function first.
 
@@ -480,27 +508,32 @@ def run_cosimulation(
         output_file_path = path_to_system_structure
         delete_output = True
     else:
-        assert os.path.isdir(output_file_path), \
-            f"The directory for the output does not exist: {output_file_path}."
+        assert os.path.isdir(
+            output_file_path
+        ), f"The directory for the output does not exist: {output_file_path}."
     logger.info(
-        'Output csv files will be saved in the following directory: %s', output_file_path
+        "Output csv files will be saved in the following directory: %s",
+        output_file_path,
     )
 
     # Run simulation
-    logger_local.info('Running simulation.')
+    logger_local.info("Running simulation.")
     proxy_processes = []
     if for_old_cosim:
         proxy_processes = [
-            local_proxy_server.run_local_fmu_proxy() for local_proxy_server in local_proxy_servers
+            local_proxy_server.run_local_fmu_proxy()
+            for local_proxy_server in local_proxy_servers
         ]
     time.sleep(3)
     for proxy_process in proxy_processes:
         if proxy_process.poll() is not None:
-            stdout = proxy_process.stdout.read().decode('utf-8')
-            stderr = proxy_process.stderr.read().decode('utf-8')
-            raise SimulationError(f'The proxy process is not running: {proxy_process.args} \n '
-                                  f'output: {stdout}\n'
-                                  f'error: {stderr}')
+            stdout = proxy_process.stdout.read().decode("utf-8")
+            stderr = proxy_process.stderr.read().decode("utf-8")
+            raise SimulationError(
+                f"The proxy process is not running: {proxy_process.args} \n "
+                f"output: {stdout}\n"
+                f"error: {stderr}"
+            )
 
     args = get_commandline_for_cosimulation(
         path_to_system_structure=path_to_system_structure,
@@ -515,16 +548,20 @@ def run_cosimulation(
 
     # Collect the logging
     logger.info(log)
-    error = [# Find a error in the lines of logging and gather with a line break in between
-        line_with_break for line in log.split('\n') if line.startswith('error')
-        for line_with_break in [line, '\n']
+    error = [  # Find a error in the lines of logging and gather with a line break in between
+        line_with_break
+        for line in log.split("\n")
+        if line.startswith("error")
+        for line_with_break in [line, "\n"]
     ]
     if len(error) > 1:
         error = error[:-1]
-    error = ''.join(error)
+    error = "".join(error)
 
     result_timeseries = get_simulation_output_from_files(
-        output_file_path=output_file_path, time_out_s=time_out_s, delete_output=delete_output
+        output_file_path=output_file_path,
+        time_out_s=time_out_s,
+        delete_output=delete_output,
     )
 
     for process in proxy_processes:
@@ -533,7 +570,9 @@ def run_cosimulation(
             time.sleep(1)
 
     if len(result_timeseries) == 0:
-        error += f'No output files were created within the time out {time_out_s} seconds.\n'
+        error += (
+            f"No output files were created within the time out {time_out_s} seconds.\n"
+        )
     else:
         logger.info(
             "Simulation completed in %f seconds.", time.time() - simulation_start_time
@@ -548,18 +587,18 @@ def run_cosimulation(
         log_stream.flush()
         log = log_stream.getvalue()
     else:
-        log = ''
+        log = ""
 
     return SimulationResult(result=result_timeseries, log=log, error=error)
 
 
 def deploy_files_for_cosimulation(
-        path_to_deploy: str,
-        fmus: List[Any],
-        system_structure: OspSystemStructure,
-        rel_path_to_system_structure: str = '',
-        logging_config: OspLoggingConfiguration = None,
-        scenario: OSPScenario = None,
+    path_to_deploy: str,
+    fmus: List[Any],
+    system_structure: OspSystemStructure,
+    rel_path_to_system_structure: str = "",
+    logging_config: OspLoggingConfiguration = None,
+    scenario: OSPScenario = None,
 ):
     """Deploy files for the simulation
 
@@ -567,6 +606,7 @@ def deploy_files_for_cosimulation(
         str: path to the system structure file
     """
     from pycosim.fmu import FMU
+
     # Update the state for the current path
     if not os.path.isdir(path_to_deploy):
         os.makedirs(path_to_deploy)
@@ -580,10 +620,9 @@ def deploy_files_for_cosimulation(
         # Deploy OspDescriptionFiles if there is
         if fmu.osp_model_description is not None:
             destination_file = os.path.join(
-                path_to_deploy,
-                f'{fmu.model_name}_OspModelDescription.xml'
+                path_to_deploy, f"{fmu.model_name}_OspModelDescription.xml"
             )
-            with open(destination_file, 'wt') as osp_model_file:
+            with open(destination_file, "wt") as osp_model_file:
                 osp_model_file.write(fmu.osp_model_description.to_xml_str())
             logger.info("Deployed %s", os.path.basename(destination_file))
 
@@ -595,9 +634,9 @@ def deploy_files_for_cosimulation(
 
     # Create a system structure file
     with open(
-        file=os.path.join(path_to_sys_struct, 'OspSystemStructure.xml'),
-        mode='wt',
-        encoding='utf-8'
+        file=os.path.join(path_to_sys_struct, "OspSystemStructure.xml"),
+        mode="wt",
+        encoding="utf-8",
     ) as file:
         file.write(system_structure.to_xml_str())
     logger.info("System structure file is created.")
@@ -605,11 +644,11 @@ def deploy_files_for_cosimulation(
     # Create a logging config file
     if logging_config is not None:
         deploy_output_config(logging_config, path_to_sys_struct)
-        logger.info('Deployed the logging configuration.')
+        logger.info("Deployed the logging configuration.")
 
     # Create a scenario file
     if scenario is not None:
         deploy_scenario(scenario, path_to_sys_struct)
-        logger.info('Deployed the scenario.')
+        logger.info("Deployed the scenario.")
 
     return path_to_sys_struct
