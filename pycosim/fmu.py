@@ -37,7 +37,7 @@ from pyOSPParser.model_description import (
     OspHydraulicQuasiPortType,
     OspLinearMechanicalPowerPortType,
     OspAngularMechanicalPowerPortType,
-    OspElectromagneticPowerPortType
+    OspElectromagneticPowerPortType,
 )
 
 from .fmu_proxy import NetworkEndpoint
@@ -46,13 +46,13 @@ from .osp_command_line import SimulationResult, run_single_fmu
 
 # %% ../nbs/02_FMU.ipynb 6
 # Define logger
-logger: Logger = logging.getLogger('__name__')
+logger: Logger = logging.getLogger("__name__")
 logger.setLevel(logging.INFO)
 
 ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
 
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 ch.setFormatter(formatter)
 
 logger.addHandler(ch)
@@ -61,16 +61,17 @@ logger.addHandler(ch)
 # %% ../nbs/02_FMU.ipynb 8
 class FMU:
     """Class for managing FMU"""
+
     osp_model_description: OspModelDescription = None
     model_description: ModelDescription = None
     runs_on_proxy_server: bool = False
     network_endpoint: Optional[NetworkEndpoint] = None
 
     def __init__(
-            self,
-            fmu_file: str,
-            runs_on_proxy_server: bool = False,
-            network_endpoint: Optional[NetworkEndpoint] = None
+        self,
+        fmu_file: str,
+        runs_on_proxy_server: bool = False,
+        network_endpoint: Optional[NetworkEndpoint] = None,
     ):
         """Initialize the FMU
 
@@ -79,11 +80,13 @@ class FMU:
             runs_on_proxy_server(bool): True if the FMU is a network FMU
             network_endpoint(NetworkEndpoint): Network endpoint information if the FMU is a network FMU
         """
-        assert fmu_file.endswith('.fmu')
+        assert fmu_file.endswith(".fmu")
         self.runs_on_proxy_server = runs_on_proxy_server
         self.network_endpoint = network_endpoint
         if runs_on_proxy_server:
-            assert network_endpoint is not None, "Network endpoint information is required for network FMU"
+            assert (
+                network_endpoint is not None
+            ), "Network endpoint information is required for network FMU"
         self.fmu_file = fmu_file
         if not self.is_remote_network_fmu:
             if os.path.isfile(fmu_file):
@@ -91,13 +94,13 @@ class FMU:
                 # Check if there is OSP Model description file in the same directory
                 osp_model_description_file = os.path.join(
                     os.path.dirname(self.fmu_file),
-                    '%s_OspModelDescription.xml' % self.model_name
+                    "%s_OspModelDescription.xml" % self.model_name,
                 )
                 if os.path.isfile(osp_model_description_file):
                     self.import_osp_model_description(osp_model_description_file)
 
             else:
-                raise TypeError(f'The FMU file cannot be found. {self.fmu_file}')
+                raise TypeError(f"The FMU file cannot be found. {self.fmu_file}")
 
     @property
     def is_remote_network_fmu(self) -> bool:
@@ -130,49 +133,49 @@ class FMU:
         """Returns the name of the FMU"""
         if not self.is_remote_network_fmu:
             return self.model_description.modelName
-        raise NotImplementedError('Network FMU does not have model name')
+        raise NotImplementedError("Network FMU does not have model name")
 
     @property
     def guid(self) -> str:
         """Returns the UUID of the FMU"""
         if not self.is_remote_network_fmu:
             return self.model_description.guid
-        raise NotImplementedError('Network FMU does not have GUID')
+        raise NotImplementedError("Network FMU does not have GUID")
 
     @property
     def description(self) -> str:
         """Returns the description of the FMU"""
         if not self.is_remote_network_fmu:
             return self.model_description.description
-        raise NotImplementedError('Network FMU does not have description')
+        raise NotImplementedError("Network FMU does not have description")
 
     @property
     def parameters(self) -> List[Dict]:
         """Returns parameters as a list of dictionaries"""
         if not self.is_remote_network_fmu:
             return [attr.asdict(var) for var in self.model_description.parameters]
-        raise NotImplementedError('Network FMU does not have parameters')
+        raise NotImplementedError("Network FMU does not have parameters")
 
     @property
     def inputs(self) -> List[Dict]:
         """Returns inputs as a list of dictionaries"""
         if not self.is_remote_network_fmu:
             return [attr.asdict(var) for var in self.model_description.input_variables]
-        raise NotImplementedError('Network FMU does not have inputs')
+        raise NotImplementedError("Network FMU does not have inputs")
 
     @property
     def outputs(self) -> List[Dict]:
         """Returns outputs as a list of dictionaries"""
         if not self.is_remote_network_fmu:
             return [attr.asdict(var) for var in self.model_description.output_variables]
-        raise NotImplementedError('Network FMU does not have outputs')
+        raise NotImplementedError("Network FMU does not have outputs")
 
     @property
     def other_variables(self) -> List[Dict]:
         """Returns other variables as a list of dictionaries"""
         if not self.is_remote_network_fmu:
             return [attr.asdict(var) for var in self.model_description.other_variables]
-        raise NotImplementedError('Network FMU does not have other variables')
+        raise NotImplementedError("Network FMU does not have other variables")
 
     def import_osp_model_description(self, xml_source: str):
         """Import OSP Model Description file or string
@@ -187,43 +190,64 @@ class FMU:
         'input', 'output', 'variable_group'"""
         if not self.is_remote_network_fmu:
             return {
-                'input': self.inputs,
-                'output': self.outputs,
-                'parameters': self.parameters,
-                'others': self.other_variables,
-                'variable_group': self.osp_model_description.to_dict().get('VariableGroups', None)
-                                  if self.osp_model_description is not None else None
+                "input": self.inputs,
+                "output": self.outputs,
+                "parameters": self.parameters,
+                "others": self.other_variables,
+                "variable_group": self.osp_model_description.to_dict().get(
+                    "VariableGroups", None
+                )
+                if self.osp_model_description is not None
+                else None,
             }
-        raise NotImplementedError('Network FMU does not have endpoint information')
+        raise NotImplementedError("Network FMU does not have endpoint information")
 
     def get_input_names(self) -> List[str]:
         """Returns input names as a list"""
-        return [input['name'] for input in self.inputs]
+        return [input["name"] for input in self.inputs]
 
     def get_output_names(self) -> List[str]:
         """Returns output names as a list"""
-        return [output['name'] for output in self.outputs]
+        return [output["name"] for output in self.outputs]
 
     def get_parameter_names(self) -> List[str]:
         """Returns parameter names as a list"""
-        return [parameter['name'] for parameter in self.parameters]
+        return [parameter["name"] for parameter in self.parameters]
 
     def get_other_variable_names(self) -> List[str]:
         """Returns other variable names as a list"""
-        return [variable['name'] for variable in self.other_variables]
+        return [variable["name"] for variable in self.other_variables]
 
-    def add_variable_group(self, var_group: Union[
-                OspGenericType, OspForceType, OspTorqueType, OspVoltageType,
-                OspPressureType, OspLinearVelocityType, OspAngularVelocityType, OspCurrentType,
-                OspVolumeFlowRateType, OspLinearDisplacementType, OspAngularDisplacementType,
-                OspChargeType, OspVolumeType, OspLinearMechanicalPortType,
-                OspAngularMechanicalPortType, OspElectromagneticPortType,
-                OspHydraulicPortType, OspLinearMechanicalQuasiPortType,
-                OspAngularMechanicalQuasiPortType, OspElectromagneticQuasiPortType,
-                OspHydraulicQuasiPortType, OspLinearMechanicalPowerPortType,
-                OspAngularMechanicalPowerPortType, OspElectromagneticPowerPortType,
-                OspHydraulicPowerPortType
-    ]):
+    def add_variable_group(
+        self,
+        var_group: Union[
+            OspGenericType,
+            OspForceType,
+            OspTorqueType,
+            OspVoltageType,
+            OspPressureType,
+            OspLinearVelocityType,
+            OspAngularVelocityType,
+            OspCurrentType,
+            OspVolumeFlowRateType,
+            OspLinearDisplacementType,
+            OspAngularDisplacementType,
+            OspChargeType,
+            OspVolumeType,
+            OspLinearMechanicalPortType,
+            OspAngularMechanicalPortType,
+            OspElectromagneticPortType,
+            OspHydraulicPortType,
+            OspLinearMechanicalQuasiPortType,
+            OspAngularMechanicalQuasiPortType,
+            OspElectromagneticQuasiPortType,
+            OspHydraulicQuasiPortType,
+            OspLinearMechanicalPowerPortType,
+            OspAngularMechanicalPowerPortType,
+            OspElectromagneticPowerPortType,
+            OspHydraulicPowerPortType,
+        ],
+    ):
         """Adds a varuabke group for the OspModelDescription"""
         if self.osp_model_description is None:
             self.osp_model_description = OspModelDescription(
@@ -233,37 +257,73 @@ class FMU:
         else:
             self.osp_model_description.add_interface(var_group)
 
-    def delete_variable_groups(self, var_group_name: str) -> Union[
-            OspGenericType, OspForceType, OspTorqueType, OspVoltageType,
-            OspPressureType, OspLinearVelocityType, OspAngularVelocityType, OspCurrentType,
-            OspVolumeFlowRateType, OspLinearDisplacementType, OspAngularDisplacementType,
-            OspChargeType, OspVolumeType, OspLinearMechanicalPortType,
-            OspAngularMechanicalPortType, OspElectromagneticPortType,
-            OspHydraulicPortType, OspLinearMechanicalQuasiPortType,
-            OspAngularMechanicalQuasiPortType, OspElectromagneticQuasiPortType,
-            OspHydraulicQuasiPortType, OspLinearMechanicalPowerPortType,
-            OspAngularMechanicalPowerPortType, OspElectromagneticPowerPortType,
-            OspHydraulicPowerPortType
+    def delete_variable_groups(
+        self, var_group_name: str
+    ) -> Union[
+        OspGenericType,
+        OspForceType,
+        OspTorqueType,
+        OspVoltageType,
+        OspPressureType,
+        OspLinearVelocityType,
+        OspAngularVelocityType,
+        OspCurrentType,
+        OspVolumeFlowRateType,
+        OspLinearDisplacementType,
+        OspAngularDisplacementType,
+        OspChargeType,
+        OspVolumeType,
+        OspLinearMechanicalPortType,
+        OspAngularMechanicalPortType,
+        OspElectromagneticPortType,
+        OspHydraulicPortType,
+        OspLinearMechanicalQuasiPortType,
+        OspAngularMechanicalQuasiPortType,
+        OspElectromagneticQuasiPortType,
+        OspHydraulicQuasiPortType,
+        OspLinearMechanicalPowerPortType,
+        OspAngularMechanicalPowerPortType,
+        OspElectromagneticPowerPortType,
+        OspHydraulicPowerPortType,
     ]:
         """Delete a variable group"""
         if self.osp_model_description is None:
-            raise TypeError('OspModelDescription has not been defined yet.')
+            raise TypeError("OspModelDescription has not been defined yet.")
         if self.osp_model_description.VariableGroups is None:
-            raise TypeError('There is no variable group to delete.')
+            raise TypeError("There is no variable group to delete.")
         return self.osp_model_description.delete_interface(var_group_name)
 
-    def get_variable_groups(self) -> List[Union[
-            OspGenericType, OspForceType, OspTorqueType, OspVoltageType,
-            OspPressureType, OspLinearVelocityType, OspAngularVelocityType, OspCurrentType,
-            OspVolumeFlowRateType, OspLinearDisplacementType, OspAngularDisplacementType,
-            OspChargeType, OspVolumeType, OspLinearMechanicalPortType,
-            OspAngularMechanicalPortType, OspElectromagneticPortType,
-            OspHydraulicPortType, OspLinearMechanicalQuasiPortType,
-            OspAngularMechanicalQuasiPortType, OspElectromagneticQuasiPortType,
-            OspHydraulicQuasiPortType, OspLinearMechanicalPowerPortType,
-            OspAngularMechanicalPowerPortType, OspElectromagneticPowerPortType,
-            OspHydraulicPowerPortType
-    ]]:
+    def get_variable_groups(
+        self,
+    ) -> List[
+        Union[
+            OspGenericType,
+            OspForceType,
+            OspTorqueType,
+            OspVoltageType,
+            OspPressureType,
+            OspLinearVelocityType,
+            OspAngularVelocityType,
+            OspCurrentType,
+            OspVolumeFlowRateType,
+            OspLinearDisplacementType,
+            OspAngularDisplacementType,
+            OspChargeType,
+            OspVolumeType,
+            OspLinearMechanicalPortType,
+            OspAngularMechanicalPortType,
+            OspElectromagneticPortType,
+            OspHydraulicPortType,
+            OspLinearMechanicalQuasiPortType,
+            OspAngularMechanicalQuasiPortType,
+            OspElectromagneticQuasiPortType,
+            OspHydraulicQuasiPortType,
+            OspLinearMechanicalPowerPortType,
+            OspAngularMechanicalPowerPortType,
+            OspElectromagneticPowerPortType,
+            OspHydraulicPowerPortType,
+        ]
+    ]:
         """Returns all the variable groups"""
         if self.osp_model_description is None:
             return []
@@ -271,8 +331,10 @@ class FMU:
         if len(variable_groups) == 0:
             return []
         return [
-            var_group for field, var_group_list in variable_groups.items()
-            if var_group_list is not None for var_group in var_group_list
+            var_group
+            for field, var_group_list in variable_groups.items()
+            if var_group_list is not None
+            for var_group in var_group_list
         ]
 
     def get_variable_group_names(self) -> List[str]:
@@ -281,11 +343,11 @@ class FMU:
         return [var_group.name for var_group in var_groups]
 
     def run_simulation(
-            self,
-            initial_values: Dict[str, Union[float, bool]] = None,
-            output_file_path: str = None,
-            duration: float = None,
-            step_size: float = None,
+        self,
+        initial_values: Dict[str, Union[float, bool]] = None,
+        output_file_path: str = None,
+        duration: float = None,
+        step_size: float = None,
     ) -> SimulationResult:
         """Runs a single FMU simulation
 
@@ -302,5 +364,5 @@ class FMU:
             initial_values=initial_values,
             output_file_path=output_file_path,
             duration=duration,
-            step_size=step_size
+            step_size=step_size,
         )
