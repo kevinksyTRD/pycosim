@@ -791,6 +791,7 @@ class SimulationConfiguration:
     _scenario: OSPScenario = None
     _logging_config: OspLoggingConfiguration = None
     _current_sim_path: str = None
+    _delete_deployed_files: bool = True
 
     def __init__(
         self,
@@ -811,12 +812,7 @@ class SimulationConfiguration:
             path_to_fmu(optional): A path to the FMUs for the given system structure.
                 Only relevant when system_structure is given.
                 If not given, the FMU path is taken from the system structure.
-            components(optional): Components for the system given as a list of Component instance
-            initial_values(optional): Initial values for the simulation given as a
-                list of InitialValues instance
-            scenario(optional): A scenario for the simulation given as a OSPScenario instance
-            logging_config(optional): A logging configuration for the output of the simulation
-                given as a OSPScenario instance
+            time_step(optional): The time step for the simulation.
         """
         self.components = []
         self.initial_values = []
@@ -848,7 +844,7 @@ class SimulationConfiguration:
 
         Deletes the deployed directory and files for the simulation.
         """
-        if self._current_sim_path:
+        if self._current_sim_path and self._delete_deployed_files:
             if os.path.isdir(self._current_sim_path):
                 shutil.rmtree(self._current_sim_path)
 
@@ -1154,6 +1150,7 @@ class SimulationConfiguration:
         path_to_deploy: str,
         rel_path_to_system_structure: str = "",
         for_old_cosim: bool = False,
+        keep_simulation_files: bool = False,
     ) -> str:
         """Deploy files for the simulation
         Returns:
@@ -1166,6 +1163,7 @@ class SimulationConfiguration:
         self._current_sim_path = path_to_deploy
         if not os.path.isdir(path_to_deploy):
             os.makedirs(path_to_deploy)
+        self._delete_deployed_files = not keep_simulation_files
 
         # Set relative path for fmus
         path_to_system_structure = os.path.join(
@@ -1209,6 +1207,7 @@ class SimulationConfiguration:
         path_to_deploy: str,
         for_old_cosim: bool = False,
         duration: float = 100.0,
+        keep_simulation_files: bool = False,
     ):
         """
         Deploy simulation package. This will deploy all the files needed for the simulation
@@ -1216,18 +1215,17 @@ class SimulationConfiguration:
 
         Args:
             path_to_deploy (str): path to deploy the simulation package
-            for_cosim_demo_app (bool): if True, the simulation package will be deployed for
-                the cosim demo app. If False, the simulation package will be deployed for
-                the cosim app. Default is False.
             for_old_cosim (bool): if True, the simulation package will be deployed for
                 the old cosim app. If False, the simulation package will be deployed for
                 the new cosim app. Default is False. Running the old cosim is only recommended
                 for the fmus that are not compatible with the new cosim app.
             duration (float): duration of the simulation. Default is 100.0.
+            keep_simulation_files (bool): if True, the simulation files will not be deleted
         """
         self.deploy_files_for_simulation(
             path_to_deploy=path_to_deploy,
             for_old_cosim=for_old_cosim,
+            keep_simulation_files=keep_simulation_files,
         )
         # Create the batch file
         commandlines = []

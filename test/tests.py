@@ -24,9 +24,35 @@ with open(PATH_TO_SYSTEM_STRUCTURE_FILE_WITH_PROXY, "rt") as file:
 
 
 class TestRunSimulation(unittest.TestCase):
-    def setUp(self) -> None:
-        self.simulation_end_time = 10 + random() * 90
 
+    def doCleanups(self) -> None:
+        self.sim_config = None
+        if self.keep_simulation_files:
+            self.assertGreater(
+                len(os.listdir(self.path_to_deploy)), 0, "The deployment folder is empty"
+            )
+            shutil.rmtree(self.path_to_deploy)
+        else:
+            if os.path.isdir(self.path_to_deploy):
+               files = os.listdir(self.path_to_deploy)
+               self.assertEqual(
+                   len(files), 1, "There should be only one file in the deployment folder"
+               )
+               self.assertTrue(files[0].endswith(".zip"), "The file should be a zip file")
+            else:
+                self.assertTrue(
+                    not os.path.isdir(self.path_to_deploy) or
+                    len(os.listdir(self.path_to_deploy)) == 0,
+                    "The deployment folder is not deleted"
+                )
+
+    def setUp(self) -> None:
+        self.keep_simulation_files = False
+        self.path_to_deploy = os.path.join(_module_path, os.path.pardir, "temp_deploy")
+        if os.path.exists(self.path_to_deploy):
+            shutil.rmtree(self.path_to_deploy)
+        os.makedirs(self.path_to_deploy)
+        self.simulation_end_time = 10 + random() * 90
         self.sim_config = SimulationConfiguration(
             system_structure=osp_system_structure_with_proxy_xml_str,
             path_to_fmu=PATH_TO_FMU_DIR,
@@ -91,52 +117,50 @@ class TestRunSimulation(unittest.TestCase):
 
     def test_deploying_the_package_for_old_cosim(self):
         """Deploy the package to a local pc"""
-        path_to_deploy = os.path.join(
-            _module_path, os.path.pardir, "temp_deploy_old_cosim"
-        )
-        if os.path.exists(path_to_deploy):
-            shutil.rmtree(path_to_deploy)
-        os.mkdir(path_to_deploy)
         self.sim_config.deploy_simulation_package(
-            path_to_deploy=path_to_deploy, for_old_cosim=True, duration=150
+            path_to_deploy=self.path_to_deploy,
+            for_old_cosim=True,
+            duration=150,
+            keep_simulation_files=self.keep_simulation_files
         )
-
         self._check_package(
-            path_deployed=path_to_deploy, path_to_bin=os.path.dirname(PATH_TO_OLD_COSIM)
+            path_deployed=self.path_to_deploy, path_to_bin=os.path.dirname(PATH_TO_OLD_COSIM)
         )
 
     def test_deploying_the_package_for_new_cosim(self):
         """Deploy the package for new cosim to a local pc"""
-        path_to_deploy = os.path.join(
-            _module_path, os.path.pardir, "temp_deploy_new_cosim"
-        )
-        if os.path.exists(path_to_deploy):
-            shutil.rmtree(path_to_deploy)
-        os.mkdir(path_to_deploy)
         self.sim_config.deploy_simulation_package(
-            path_to_deploy=path_to_deploy, for_old_cosim=False, duration=150
+            path_to_deploy=self.path_to_deploy,
+            for_old_cosim=False,
+            duration=150,
+            keep_simulation_files=self.keep_simulation_files
         )
-
         self._check_package(
-            path_deployed=path_to_deploy, path_to_bin=os.path.dirname(PATH_TO_COSIM)
+            path_deployed=self.path_to_deploy, path_to_bin=os.path.dirname(PATH_TO_COSIM)
         )
 
     def test_export_simulation_package_to_zip(self):
         """Deploy the package as a zip file"""
-        path_to_deploy = os.path.join(_module_path, os.path.pardir, "temp_deploy_zip")
-        if os.path.exists(path_to_deploy):
-            shutil.rmtree(path_to_deploy)
-        os.mkdir(path_to_deploy)
         name = "test_export_simulation_package"
         self.sim_config.export_simulation_package_to_zip(
-            path_to_dir=path_to_deploy,
+            path_to_dir=self.path_to_deploy,
             name="test_export_simulation_package",
             for_old_cosim=True,
             duration=150,
         )
         self.assertTrue(
-            os.path.exists(os.path.join(path_to_deploy, f"{name}.zip")),
+            os.path.exists(os.path.join(self.path_to_deploy, f"{name}.zip")),
             "The zip file is not created",
+        )
+
+    def test_export_simulation_package_and_keep_files(self):
+        """Deploy the package for new cosim to a local pc"""
+        self.keep_simulation_files = True
+        self.sim_config.deploy_simulation_package(
+            path_to_deploy=self.path_to_deploy,
+            for_old_cosim=False,
+            duration=150,
+            keep_simulation_files=True
         )
 
 
