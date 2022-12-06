@@ -1151,13 +1151,15 @@ class SimulationConfiguration:
         rel_path_to_system_structure: str = "",
         for_old_cosim: bool = False,
         keep_simulation_files: bool = False,
+        clean_up_previous_files: bool = True,
+        skip_fmu_copy: bool = False,
     ) -> str:
         """Deploy files for the simulation
         Returns:
             str: path to the system structure file
         """
         # Update the state for the current path
-        if self._current_sim_path:
+        if self._current_sim_path and clean_up_previous_files:
             if os.path.isdir(self._current_sim_path):
                 shutil.rmtree(self._current_sim_path)
         self._current_sim_path = path_to_deploy
@@ -1184,6 +1186,7 @@ class SimulationConfiguration:
             rel_path_to_system_structure=rel_path_to_system_structure,
             logging_config=self.logging_config,
             scenario=self.scenario,
+            skip_fmu_copy=skip_fmu_copy,
         )
 
     def _get_local_proxy_servers_for_old_cosim(

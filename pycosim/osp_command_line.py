@@ -599,6 +599,7 @@ def deploy_files_for_cosimulation(
     rel_path_to_system_structure: str = "",
     logging_config: OspLoggingConfiguration = None,
     scenario: OSPScenario = None,
+    skip_fmu_copy: bool = False,
 ):
     """Deploy files for the simulation
 
@@ -612,19 +613,20 @@ def deploy_files_for_cosimulation(
         os.makedirs(path_to_deploy)
     logger.info("Deploying files to %s", path_to_deploy)
     # Create a fmu list from the components
-    for fmu in fmus:
-        fmu = cast(FMU, fmu)
-        destination_file = os.path.join(path_to_deploy, os.path.basename(fmu.fmu_file))
-        shutil.copyfile(fmu.fmu_file, destination_file)
-        logger.info("Deployed %s", os.path.basename(fmu.fmu_file))
-        # Deploy OspDescriptionFiles if there is
-        if fmu.osp_model_description is not None:
-            destination_file = os.path.join(
-                path_to_deploy, f"{fmu.model_name}_OspModelDescription.xml"
-            )
-            with open(destination_file, "wt") as osp_model_file:
-                osp_model_file.write(fmu.osp_model_description.to_xml_str())
-            logger.info("Deployed %s", os.path.basename(destination_file))
+    if not skip_fmu_copy:
+        for fmu in fmus:
+            fmu = cast(FMU, fmu)
+            destination_file = os.path.join(path_to_deploy, os.path.basename(fmu.fmu_file))
+            shutil.copyfile(fmu.fmu_file, destination_file)
+            logger.info("Deployed %s", os.path.basename(fmu.fmu_file))
+            # Deploy OspDescriptionFiles if there is
+            if fmu.osp_model_description is not None:
+                destination_file = os.path.join(
+                    path_to_deploy, f"{fmu.model_name}_OspModelDescription.xml"
+                )
+                with open(destination_file, "wt") as osp_model_file:
+                    osp_model_file.write(fmu.osp_model_description.to_xml_str())
+                logger.info("Deployed %s", os.path.basename(destination_file))
 
     # Check out with the path for the system structure file. If it doesn't exist
     # create the directory.

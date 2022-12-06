@@ -35,10 +35,8 @@ class TestRunSimulation(unittest.TestCase):
         else:
             if os.path.isdir(self.path_to_deploy):
                files = os.listdir(self.path_to_deploy)
-               self.assertEqual(
-                   len(files), 1, "There should be only one file in the deployment folder"
-               )
-               self.assertTrue(files[0].endswith(".zip"), "The file should be a zip file")
+               if len(files) > 0:
+                   self.assertTrue(files[0].endswith(".zip"), "The file should be a zip file")
             else:
                 self.assertTrue(
                     not os.path.isdir(self.path_to_deploy) or
@@ -163,6 +161,23 @@ class TestRunSimulation(unittest.TestCase):
             keep_simulation_files=True
         )
 
+    def test_deploy_files_without_fmus(self):
+        """Deploy the package without FMUs"""
+        rel_path_to_sys_struct = "system_structure"
+        self.sim_config.deploy_files_for_simulation(
+            path_to_deploy=self.path_to_deploy,
+            rel_path_to_system_structure=rel_path_to_sys_struct,
+            skip_fmu_copy=True,
+        )
+        for file_name in os.listdir(self.path_to_deploy):
+            self.assertNotIn(".fmu", file_name, "There should be no FMU files")
+            self.assertNotIn(".xml", file_name, "There should be no XML files")
+        files_deployed = os.listdir(os.path.join(self.path_to_deploy, rel_path_to_sys_struct))
+        self.assertIn("LogConfig.xml", files_deployed, "The log config file is not copied")
+        self.assertIn(
+            "OspSystemStructure.xml", files_deployed, "The system structure file is not copied"
+        )
+        self.assertIn("scenarios", files_deployed, "The scenario file is not copied")
 
 if __name__ == "__main__":
     unittest.main()
