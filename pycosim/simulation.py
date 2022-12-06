@@ -1311,6 +1311,7 @@ class SimulationConfiguration:
         time_out_s: int = 60,
         logging_level: LoggingLevel = LoggingLevel.warning,
         for_old_cosim: bool = False,
+        keep_simulation_files: bool = False,
     ):
         """Runs a simulation"""
         path = self._prepare_temp_dir_for_simulation()
@@ -1318,6 +1319,7 @@ class SimulationConfiguration:
             path_to_deploy=path,
             rel_path_to_system_structure=rel_path_to_sys_struct,
             for_old_cosim=for_old_cosim,
+            keep_simulation_files=keep_simulation_files,
         )
         if for_old_cosim:
             local_proxy_servers = self._get_local_proxy_servers_for_old_cosim(
