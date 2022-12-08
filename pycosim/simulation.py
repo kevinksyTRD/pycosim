@@ -2,9 +2,9 @@
 
 # %% auto 0
 __all__ = ['logger', 'ch', 'formatter', 'OspConnection', 'convert_value_to_osp_type', 'clean_header',
-           'SimulationConfigurationError', 'VariableType', 'SignalType', 'Causality', 'VariableEndpoint',
-           'is_osp_variable_group', 'get_variables_from_osp_variable_group', 'Component', 'InitialValues',
-           'SimulationOutput', 'SignalEndpoint', 'Function', 'Connection', 'SimulationConfiguration']
+           'SimulationConfigurationError', 'VariableType', 'SignalType', 'VariableEndpoint', 'is_osp_variable_group',
+           'get_variables_from_osp_variable_group', 'Component', 'InitialValues', 'SimulationOutput', 'SignalEndpoint',
+           'Function', 'Connection', 'SimulationConfiguration']
 
 # %% ../nbs/03_Simulation.ipynb 4
 import glob
@@ -79,7 +79,7 @@ from pycosim.osp_command_line import (
     PATH_TO_OLD_COSIM,
     PATH_TO_COSIM,
 )
-from .fmu import FMU
+from .fmu import FMU, Causality
 from pycosim.fmu_proxy import (
     DistributedSimulationProxyServer,
     PROXY_HEADER,
@@ -154,14 +154,6 @@ class SignalType(Enum):
 
     SIGNAL = "Signal"
     SIGNAL_GROUP = "Signal Group"
-
-
-class Causality(Enum):
-    """Causality used for variable connection"""
-
-    INPUT = "input"
-    OUTPUT = "output"
-    INDEFINITE = "indefinite"
 
 
 @dataclass
@@ -308,7 +300,7 @@ class Component:
         elif variable_name in self.fmu.get_output_names():
             causality = Causality.OUTPUT
         elif variable_name in self.fmu.get_variable_group_names():
-            causality = Causality.INDEFINITE
+            causality = self.fmu.check_causality_var_var_group(variable_name)
             variable_type = VariableType.VARIABLE_GROUP
             osp_variable_group = next(
                 filter(
@@ -329,7 +321,7 @@ class Component:
                 )
             self._inputs_used_as_variable_end_points.append(variable_name)
         # Check if the input used in the variable group is not already used as an input
-        if causality == Causality.INDEFINITE:
+        if variable_type == VariableType.VARIABLE_GROUP:
             for sub_variable in variables_for_variable_group:
                 if sub_variable in self.fmu.get_input_names():
                     if sub_variable in self._inputs_used_as_variable_end_points:
@@ -766,7 +758,7 @@ class Connection:
         if isinstance(endpoint, OspSignalEndpoint):
             if (
                 self.source.name == endpoint.function
-                and self.source_endpoint.name == endpoint.name
+                and self.source_endpoint.signal_name == endpoint.name
             ):
                 return True
             if (

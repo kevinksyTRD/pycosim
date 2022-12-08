@@ -71,6 +71,7 @@ class TestRunSimulation(unittest.TestCase):
         logging_config = OspLoggingConfiguration(xml_source=PATH_TO_LOG_CONFIG)
         self.sim_config.logging_config = logging_config
 
+
     def test_run_cosim_with_local_proxy_servers(self):
         """Run the simulation with local proxy servers"""
         result = self.sim_config.run_simulation(
