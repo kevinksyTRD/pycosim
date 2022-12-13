@@ -147,20 +147,9 @@ class TestRunSimulation(unittest.TestCase):
             for_old_cosim=True,
             duration=150,
         )
-        self.assertTrue(
-            os.path.exists(os.path.join(self.path_to_deploy, f"{name}.zip")),
-            "The zip file is not created",
-        )
-
-    def test_export_simulation_package_and_keep_files(self):
-        """Deploy the package for new cosim to a local pc"""
-        self.keep_simulation_files = True
-        self.sim_config.deploy_simulation_package(
-            path_to_deploy=self.path_to_deploy,
-            for_old_cosim=False,
-            duration=150,
-            keep_simulation_files=True
-        )
+        path_zip_file = os.path.join(self.path_to_deploy, f"{name}.zip")
+        self.assertTrue(os.path.exists(path_zip_file), "The zip file is not created")
+        shutil.copy(path_zip_file, "C:\\temp\\test.zip")
 
     def test_deploy_files_without_fmus(self):
         """Deploy the package without FMUs"""

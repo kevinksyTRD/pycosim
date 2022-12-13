@@ -1230,7 +1230,7 @@ class SimulationConfiguration:
             )
             commandlines.extend(
                 [
-                    f'start cmd /C {" ".join(local_proxy_server.get_local_fmu_proxy_command())}'
+                    f'start cmd /C {" ".join(local_proxy_server.get_local_fmu_proxy_command(for_package=True))}'
                     for local_proxy_server in local_proxy_servers
                 ]
             )
@@ -1242,6 +1242,7 @@ class SimulationConfiguration:
             for_old_cosim=for_old_cosim,
             duration=duration,
             logging_level=LoggingLevel.info,
+            for_package=True,
         )
         commandlines_for_cosim = [f'start {" ".join(commandline_args)}']
         commandlines_for_demo_app = [

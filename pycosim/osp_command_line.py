@@ -248,7 +248,8 @@ def get_commandline_for_cosimulation(
     for_old_cosim: bool = False,
     duration: float = None,
     logging_level: LoggingLevel = LoggingLevel.warning,
-):
+    for_package: bool = False,
+) -> List[str]:
     """Get the command line for cosimulation"""
     mode = "run"
 
@@ -273,11 +274,8 @@ def get_commandline_for_cosimulation(
     assert os.path.isfile(
         path_to_osp_sys_structure
     ), f"The system structure directory is not found: {path_to_system_structure}"
-    args = [path_to_bin, mode, path_to_system_structure]
 
-    if output_file_path:
-        args.append(f"--output-dir={output_file_path}")
-
+    # Check if the scenario exists
     if scenario_name is not None:
         scenario_file_path = os.path.join(
             path_to_system_structure,
@@ -288,6 +286,23 @@ def get_commandline_for_cosimulation(
             raise FileNotFoundError(
                 f"The scenario file is not found: {scenario_file_path}"
             )
+
+    if for_package:
+        path_to_bin = os.path.join("bin", os.path.basename(path_to_bin))
+        output_file_path = os.path.relpath(output_file_path, path_to_system_structure)
+        path_to_system_structure = "."
+    args = [path_to_bin, mode, path_to_system_structure]
+
+    if output_file_path:
+        args.append(f"--output-dir={output_file_path}")
+
+    # Set scenario path
+    if scenario_name is not None:
+        scenario_file_path = os.path.join(
+            path_to_system_structure,
+            "scenarios",
+            f"{format_filename(scenario_name)}.json",
+        )
         args.append(f"--scenario={scenario_file_path}")
 
     if duration is not None:

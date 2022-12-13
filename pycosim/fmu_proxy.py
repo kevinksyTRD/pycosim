@@ -68,9 +68,15 @@ class NetworkEndpoint:
         return self.address in ["localhost", "127.0.0.1"]
 
 
-def get_run_arguments_for_proxy_fmu(port: int, fmu_path: str) -> List[str]:
+def get_run_arguments_for_proxy_fmu(port: int, fmu_path: str, for_package: bool = False) -> List[str]:
     """Get the arguments for running the proxy fmu"""
-    return ["java", "-jar", PATH_TO_FMU_PROXY_JAR, "-thrift/tcp", str(port), fmu_path]
+    if for_package:
+        path_to_jar = os.path.join("bin", os.path.basename(PATH_TO_FMU_PROXY_JAR))
+        path_to_fmu = os.path.basename(fmu_path)
+    else:
+        path_to_jar = PATH_TO_FMU_PROXY_JAR
+        path_to_fmu = fmu_path
+    return ["java", "-jar", path_to_jar, "-thrift/tcp", str(port), path_to_fmu]
 
 
 def run_proxy_fmu(port: int, fmu_path: str) -> Popen:
@@ -100,15 +106,15 @@ def check_java_version_for_fmu_proxy():
         java_version = check_output(["java", "-version"], stderr=STDOUT).decode("utf-8")
     except FileNotFoundError as exc:
         raise TypeError(
-            "Java runtime not found. Please install Java runtime 1.8.0_281."
+            "Java runtime not found. Please install Java runtime 1.8.0_281 or upto 1.8.0.333."
         ) from exc
     index_start = java_version.find('"')
     index_end = java_version.find('"', index_start + 1)
     java_version1, java_version2 = java_version[index_start + 1 : index_end].split("_")
     if java_version1 != "1.8.0":
-        raise TypeError("Java version must be 1.8.0_281 or lower.")
-    if int(java_version2) > 281:
-        raise TypeError("Java version must be 1.8.0_281 or lower.")
+        raise TypeError("Java version must be 1.8.0_333 or lower.")
+    if int(java_version2) > 333:
+        raise TypeError("Java version must be 1.8.0_333 or lower.")
 
 
 class DistributedSimulationProxyServer:
@@ -170,12 +176,12 @@ class DistributedSimulationProxyServer:
             check_java_version_for_fmu_proxy()
             return run_proxy_fmu(port=self.endpoint.port, fmu_path=fmu_path)
 
-    def get_local_fmu_proxy_command(self, fmu_path: str = None) -> List[str]:
+    def get_local_fmu_proxy_command(self, fmu_path: str = None, for_package: bool = False) -> List[str]:
         """Returns the command for running the local fmu proxy"""
         if not self.has_guid:
             raise TypeError("GUID missing for the proxy server")
         else:
             fmu_path = fmu_path if fmu_path is not None else self.file_path_fmu
             return get_run_arguments_for_proxy_fmu(
-                port=self.endpoint.port, fmu_path=fmu_path
+                port=self.endpoint.port, fmu_path=fmu_path, for_package=for_package
             )
